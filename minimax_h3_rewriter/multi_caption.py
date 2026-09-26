@@ -49,6 +49,7 @@ from .nodes import (
     captioner_choices,
     next_index,
     slot_instructions,
+    valid_captioner,
 )
 from .progress import NodeProgress
 
@@ -331,6 +332,12 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
             ],
             hidden=[io.Hidden.unique_id],
         )
+
+    @classmethod
+    def validate_inputs(
+        cls, model=None, subjects=None, pictures=None, videos=None, audios=None
+    ):
+        return valid_captioner(model)
 
     @classmethod
     def execute(

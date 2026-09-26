@@ -171,6 +171,7 @@ class TransferReporter:
         self.title = title
         self.started_at = time.monotonic()
         self.baseline = None
+        self.transferred = 0
         self.progress.set_total(self.total_bytes)
 
     def set_total(self, total_bytes: int) -> None:
@@ -178,6 +179,7 @@ class TransferReporter:
         self.progress.set_total(self.total_bytes)
 
     def __call__(self, transferred: int, current_name: str) -> None:
+        self.transferred = transferred
         if self.baseline is None:
             self.baseline = transferred
             self.started_at = time.monotonic()

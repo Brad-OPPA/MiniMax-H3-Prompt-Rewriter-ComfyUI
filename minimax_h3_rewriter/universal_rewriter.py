@@ -76,7 +76,9 @@ from .nodes import (
     _fix_once,
     _report,
     model_choices,
+    named_verdicts,
     rewrite_t2va,
+    valid_model,
 )
 from .progress import NodeProgress, announce
 from .references import SLOTS_OUTPUT_TOOLTIP, SLOTS_TYPE, slot_bundle
@@ -513,6 +515,26 @@ class MiniMaxH3UniversalRewriter(io.ComfyNode):
         return library.stamp(library_pick, repeat_last) + memory.stamp(
             getattr(getattr(cls, "hidden", None), "unique_id", None), repeat_last
         )
+
+    @classmethod
+    def validate_inputs(cls, lora=None, model_27b=None, model_8b=None, model_omni=None):
+        """Only the base the chosen tab runs has to exist.
+
+        ComfyUI checked all three, so an 8B entry deleted from the list stopped a
+        graph that was running the 27B. ``lora`` is named here to know which tab
+        that is, and naming it takes ComfyUI's own check of it away, so it is
+        checked here instead. Wired, it is unknown, and all three are checked.
+        """
+        if lora is not None and lora not in LORAS:
+            return f"lora: '{lora}' is not one of {', '.join(LORAS)}."
+        verdicts = []
+        if lora in (None, LORA_27B):
+            verdicts.append(("model_27b", valid_model(model_27b)))
+        if lora in (None, LORA_8B):
+            verdicts.append(("model_8b", writer_8b.valid_model(model_8b)))
+        if lora in (None, LORA_OMNI) and model_omni:
+            verdicts.append(("model_omni", writer_omni.valid_model(model_omni)))
+        return named_verdicts(*verdicts)
 
     @classmethod
     def execute(

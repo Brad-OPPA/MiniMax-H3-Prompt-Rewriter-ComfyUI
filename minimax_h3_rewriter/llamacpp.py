@@ -315,11 +315,11 @@ def asset_size(name: str) -> int:
     HEAD follows the redirect to release-assets.githubusercontent.com, carries
     no rate limit, and comes from the same place the bytes will.
     """
-    import requests
+    from . import download
 
     try:
-        response = requests.head(
-            f"{DOWNLOAD_URL}/{name}", allow_redirects=True, timeout=(15, 30)
+        response = download.http(
+            "HEAD", f"{DOWNLOAD_URL}/{name}", allow_redirects=True, timeout=(15, 30)
         )
         if response.status_code >= 400:
             return 0

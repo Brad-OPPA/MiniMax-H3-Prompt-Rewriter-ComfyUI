@@ -324,13 +324,11 @@ def read_local_config(directory: str) -> dict | None:
 
 def fetch_remote_config(repo_id: str, revision: str = "main") -> dict | None:
     """Fetch only ``config.json`` — 4 KB against a 20-52 GB download."""
-    import requests
-
-    from .download import _headers, access_token, endpoint
+    from .download import _headers, access_token, endpoint, http
 
     url = f"{endpoint()}/{repo_id}/resolve/{revision}/{CONFIG_NAME}"
     try:
-        response = requests.get(url, headers=_headers(access_token()), timeout=(15, 30))
+        response = http("GET", url, headers=_headers(access_token()), timeout=(15, 30))
     except Exception as error:
         log.warning("[minimax_h3_rewriter.fetch_remote_config] %s: %s", repo_id, error)
         return None

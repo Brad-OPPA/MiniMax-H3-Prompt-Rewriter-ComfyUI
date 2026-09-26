@@ -9,6 +9,7 @@ const NODE_SECTIONS = {
     MiniMaxH3PromptWriterOmni: [["model", "models_omni"]],
     MiniMaxH3GuidedWriter: [["model", "writers"]],
     MiniMaxH3GuidedWriterRef: [["model", "writers"]],
+    MiniMaxH3PromptReducer: [["model", "writers"]],
     MiniMaxH3ReferenceCaption: [["model", "captioners"]],
     MiniMaxH3MultiReferenceCaption: [["model", "captioners"]],
     MiniMaxH3UniversalWriter: [
@@ -97,7 +98,8 @@ const STYLE = `
 .mmxmod-bad { color: #E08A8A; }
 .mmxmod-warn { color: #E0A45A; }
 .mmxmod-good { color: #7FB77F; }
-.mmxmod-busy { color: var(--descrip-text, #999); }
+.mmxmod-busy, .mmxmod-note { color: var(--descrip-text, #999); }
+.mmxmod-tag.mmxmod-here { color: #7FB77F; border-color: #7FB77F; }
 `;
 
 function eachGraphNode(graph, visit) {
@@ -137,13 +139,54 @@ function repoint(section, before, after) {
     return moved;
 }
 
-async function refreshVue() {
-    if (!app.extensionManager?.setting?.get?.("Comfy.VueNodes.Enabled")) return;
+async function refreshDefinitions() {
     try {
         await app.refreshComboInNodes();
     } catch (error) {
         console.warn("[MiniMax-H3 Prompt Rewriter] could not reload node definitions", error);
     }
+}
+
+async function heal(graph = app.graph) {
+    const stale = [];
+    eachGraphNode(graph, (item) => {
+        for (const [widget, section] of NODE_SECTIONS[item.type] || []) {
+            const combo = widgetNamed(item, widget);
+            const values = combo?.options?.values;
+            if (!combo || typeof combo.value !== "string" || !combo.value) continue;
+            if (!Array.isArray(values) || values.includes(combo.value)) continue;
+            stale.push({ item, widget, section, value: combo.value });
+        }
+    });
+    if (!stale.length) return 0;
+
+    const labels = {};
+    for (const one of stale) {
+        labels[one.section] = labels[one.section] || [];
+        if (!labels[one.section].includes(one.value)) labels[one.section].push(one.value);
+    }
+    let payload = {};
+    try {
+        ({ payload } = await ask(`${ROOT}/current`, { labels }));
+    } catch (error) {
+        console.debug("[MiniMax-H3 Prompt Rewriter] could not ask for the current labels", error);
+        return 0;
+    }
+
+    let moved = 0;
+    for (const one of stale) {
+        const now = payload?.labels?.[one.section]?.[one.value];
+        if (!now || widgetNamed(one.item, one.widget)?.value !== one.value) continue;
+        setWidgetValue(one.item, one.widget, now);
+        moved += 1;
+    }
+    if (moved) {
+        console.log(
+            `[MiniMax-H3 Prompt Rewriter] moved ${moved} model widget(s) to the label ` +
+                "their list shows now"
+        );
+    }
+    return moved;
 }
 
 const MIDDLE_DOT = "\u00b7";
@@ -321,13 +364,18 @@ function openEntryForm(section, held, onSaved) {
 
         moved.replaceChildren();
         if (editing && previewLabel(values()) !== held.label) {
+            const renamed = values().name !== held.name;
             moved.appendChild(
                 element(
                     "div",
-                    "mmxmod-warn",
-                    `- The dropdown reads '${held.label}' today. Saving this renames it, and ` +
-                        "workflows holding the old name lose their choice -- the graph open " +
-                        "here is moved across for you, others are not."
+                    renamed ? "mmxmod-warn" : "mmxmod-note",
+                    renamed
+                        ? `- The dropdown reads '${held.label}' today. Saving this renames the ` +
+                              "entry, and workflows holding the old name lose their choice -- " +
+                              "the graph open here is moved across for you, others are not."
+                        : `- The dropdown reads '${held.label}' today. Workflows holding that ` +
+                              "still find the entry by its name, and move to the new label " +
+                              "when they are opened."
                 )
             );
         }
@@ -379,9 +427,10 @@ function openEntryForm(section, held, onSaved) {
                     `'${payload.label_after}'`
             );
         }
-        await refreshVue();
+        await heal();
         close();
         onSaved();
+        refreshDefinitions();
     });
 
     name.focus();
@@ -393,6 +442,15 @@ function entryCard(section, held, reload, writable) {
 
     const heading = element("div", "mmxmod-name");
     if (held.seeded) heading.appendChild(element("span", "mmxmod-tag", "from the pack"));
+    if (held.on_disk) {
+        const here = element("span", "mmxmod-tag mmxmod-here", "on disk");
+        here.title =
+            "Already downloaded, so choosing it fetches nothing." +
+            (held.scanned
+                ? " Its file is not listed a second time under 'Found in your model folders'."
+                : "");
+        heading.appendChild(here);
+    }
     heading.appendChild(document.createTextNode(held.label || held.name));
     body.appendChild(heading);
 
@@ -408,7 +466,14 @@ function entryCard(section, held, reload, writable) {
         const coming = held.seeded
             ? "It is one of the pack's own, so 'Restore the packaged entries' can bring it back."
             : "It is yours, so nothing will bring it back -- you would type it again.";
-        if (!confirm(`Delete '${held.label}' from ${section.title}?\n\n${coming}`)) return;
+        const after = held.scanned
+            ? "Its file stays on disk and is offered as an 'on disk:' row, and nodes in this " +
+              "graph that use the entry move to that row."
+            : "Nodes that use it keep it until another model is picked, and a run before " +
+              "then stops and says so rather than picking one for you.";
+        if (!confirm(`Delete '${held.label}' from ${section.title}?\n\n${coming}\n\n${after}`)) {
+            return;
+        }
         drop.disabled = true;
         const { payload } = await ask("/minimax_h3_rewriter/model_list/delete", {
             section: section.key,
@@ -420,8 +485,15 @@ function entryCard(section, held, reload, writable) {
             return;
         }
         applyChoices(payload.choices);
-        await refreshVue();
+        const carried = repoint(section.key, payload.label_before, payload.label_after);
+        if (carried) {
+            console.log(
+                `[MiniMax-H3 Prompt Rewriter] moved ${carried} widget(s) to ` +
+                    `'${payload.label_after}'`
+            );
+        }
         reload();
+        refreshDefinitions();
     });
     if (!writable) {
         const why = "The file cannot be written right now -- see the message in the footer.";
@@ -478,7 +550,8 @@ function openModelList(node) {
     const reloading = element("button", "", "Reload definitions");
     reloading.title =
         "Ask ComfyUI to re-read every node definition. The dropdowns are already kept in " +
-        "step as you edit, so this is only needed if one looks stale.";
+        "step as you edit, so this is only needed if one looks stale -- after a model was " +
+        "copied into a folder by hand, or the list was edited from another browser tab.";
     const shutting = element("button", "", "Close");
     row.append(trouble, adding, restoring, opening, reloading, shutting);
     panel.appendChild(row);
@@ -527,7 +600,8 @@ function openModelList(node) {
                     "div",
                     "mmxmod-heading",
                     "Found in your model folders. These are offered too, and there is nothing " +
-                        "to edit: they are files on disk, not entries in the file."
+                        "to edit: they are files on disk, not entries in the file. A file an " +
+                        "entry above already downloaded is not repeated here."
                 )
             );
             for (const text of section.found) cards.appendChild(scannedCard(text));
@@ -570,8 +644,9 @@ function openModelList(node) {
             return;
         }
         applyChoices(answer.payload.choices);
-        await refreshVue();
+        await heal();
         load();
+        refreshDefinitions();
     });
     opening.addEventListener("click", () => {
         openTheFile();
@@ -625,5 +700,8 @@ app.registerExtension({
     name: "minimax_h3_rewriter.model_list",
     async beforeRegisterNodeDef(nodeType, nodeData) {
         addButtons(nodeType, nodeData);
+    },
+    afterConfigureGraph() {
+        heal();
     },
 });

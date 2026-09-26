@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import os
+import ssl
 import threading
 
 from . import download
@@ -95,6 +96,28 @@ def _is_interrupt(error: BaseException) -> bool:
     except ImportError:
         return False
     return isinstance(error, comfy.model_management.InterruptProcessingException)
+
+
+def _untrusted(error: BaseException) -> bool:
+    """Whether a certificate nobody here trusts is somewhere down the chain of causes.
+
+    huggingface_hub goes through httpx and hf_xet through its own Rust client, so
+    the error that arrives is theirs, wrapped once or twice. The message is the
+    one thing they all keep.
+    """
+    for _ in range(8):
+        if error is None:
+            return False
+        text = str(error).lower()
+        if isinstance(error, ssl.SSLCertVerificationError) or any(
+            marker in text for marker in _UNTRUSTED_MARKERS
+        ):
+            return True
+        error = error.__cause__ or error.__context__
+    return False
+
+
+_UNTRUSTED_MARKERS = ("certificate verify failed", "invalid peer certificate", "unknownissuer")
 
 
 def _destination(dest_dir: str, repo_path: str) -> str:
@@ -251,11 +274,19 @@ def sync_repo(
         except Exception as error:
             if _is_interrupt(error):
                 raise
+            untrusted = _untrusted(error)
             raise download.DownloadError(
                 f"'{item.path}' could not be fetched from '{repo_id}' through "
                 f"huggingface_hub: {error}\n\n"
-                f"Setting 'downloader' back to '{DOWNLOADER_BUILTIN}' on the options node uses "
-                f"this pack's own transfer instead, which needs nothing installed."
+                + (
+                    f"{download.UNTRUSTED_HINT}\n\nThis pack's own transfer also trusts the "
+                    f"system store, which is where such a root usually is, and huggingface_hub "
+                    f"does not -- setting 'downloader' back to '{DOWNLOADER_BUILTIN}' on the "
+                    f"options node may be all it takes."
+                    if untrusted
+                    else f"Setting 'downloader' back to '{DOWNLOADER_BUILTIN}' on the options "
+                    f"node uses this pack's own transfer instead, which needs nothing installed."
+                )
             ) from error
         transferred += item.size
         on_progress(transferred, name)

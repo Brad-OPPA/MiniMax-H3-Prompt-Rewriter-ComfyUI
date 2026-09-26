@@ -251,6 +251,19 @@ PICK_TOOLTIP = (
 KINDS = ("image", "video", "audio")
 
 
+def counted_as(references) -> list[str]:
+    """What the self-check counts a record's references as: its kind, unless ``as`` says.
+
+    ``as`` is set where the prompt labels a reference as something other than
+    what it is -- see ``snapshot._take``.
+    """
+    return [
+        entry.get("as", entry.get("kind"))
+        for entry in references or ()
+        if isinstance(entry, dict)
+    ]
+
+
 def shape(references) -> dict:
     """How many of each kind, from records or from a list of bare kind names."""
     counts = {}

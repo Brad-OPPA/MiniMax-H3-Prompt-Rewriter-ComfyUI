@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from . import aspect, catalog, discovery, engine, media, mtmd_engine
+from . import aspect, catalog, discovery, engine, media, model_sections, mtmd_engine
 from .catalog import FORMAT_GGUF, FORMAT_TRANSFORMERS
 from .constants import (
     MERGE_AUTO,
@@ -51,17 +51,23 @@ from .nodes import (
     _bypassed,
     _ensure_pair,
     _ensure_present,
+    _find,
     _gguf_text,
     _fix_once,
+    _holding,
     _refuse_problem,
     _report,
     _resolve_adapter,
+    _shown,
+    _valid,
     _verify_base_model,
 )
 from .progress import NodeProgress, announce
 from .prompt_template_8b import build_messages, expected_image_count, normalize_task
 
 log = logging.getLogger(__name__)
+
+SECTION = "models_8b"
 
 BASE_REPO_8B = "Qwen/Qwen3-VL-8B-Instruct"
 
@@ -86,6 +92,7 @@ class BaseChoice:
     file: str = ""
     mmproj: str = ""
     local: bool = False
+    copy_of: str = ""
 
 
 MEDIA_MARKER = "<__media__>"
@@ -187,12 +194,14 @@ def _build_model_map() -> dict[str, BaseChoice]:
     will caption, but only a Qwen3-VL of this size can carry this LoRA.
     """
     mapping: dict[str, BaseChoice] = {}
+    held = []
     try:
         for entry in catalog.models_8b():
             if not entry.is_gguf:
                 mapping[entry.label] = BaseChoice(
                     reference=entry.repo, fmt=FORMAT_TRANSFORMERS
                 )
+                held.append(_holding(SECTION, entry))
                 continue
             if not entry.mmproj:
                 log.warning(
@@ -202,6 +211,7 @@ def _build_model_map() -> dict[str, BaseChoice]:
             mapping[entry.label] = BaseChoice(
                 reference=entry.repo, file=entry.file, mmproj=entry.mmproj
             )
+            held.append(_holding(SECTION, entry))
     except Exception:
         log.warning("[minimax_h3_rewriter.writer_8b] catalog unreadable", exc_info=True)
     try:
@@ -209,14 +219,16 @@ def _build_model_map() -> dict[str, BaseChoice]:
             arch=discovery.GGUF_ARCH_8B
         ):
             mapping[f"{LOCAL_PREFIX}{label}"] = BaseChoice(
-                reference=model_path, mmproj=mmproj_path, local=True
+                reference=model_path, mmproj=mmproj_path, local=True,
+                copy_of=model_sections.copy_of(held, model_path, mmproj_path),
             )
     except Exception:
         log.warning("[minimax_h3_rewriter.writer_8b] gguf scan failed", exc_info=True)
     try:
         for label, directory in discovery.scan_local(discovery.SHAPE_8B):
             mapping[f"{LOCAL_PREFIX}{label}"] = BaseChoice(
-                reference=directory, fmt=FORMAT_TRANSFORMERS, local=True
+                reference=directory, fmt=FORMAT_TRANSFORMERS, local=True,
+                copy_of=model_sections.copy_of(held, directory),
             )
     except Exception:
         log.warning("[minimax_h3_rewriter.writer_8b] local scan failed", exc_info=True)
@@ -227,22 +239,28 @@ def _build_model_map() -> dict[str, BaseChoice]:
 
 
 def model_choices() -> list[str]:
-    choices = list(_build_model_map())
+    choices = _shown(_build_model_map())
     return _announce(choices or ["(no Qwen3-VL model found - see the model list)"])
 
 
-def _resolve_model_choice(choice: str) -> BaseChoice:
-    _refuse_problem(choice)
-    found = _MODEL_MAP.get(choice)
-    if found is None:
-        found = _build_model_map().get(choice)
-    if found is not None:
-        return found
-    raise RuntimeError(
+def _gone(choice: str) -> str:
+    return (
         f"'{choice}' is not in the 8B model list any more. Pick another entry, put a "
         f"Qwen3-VL '.gguf' and its 'mmproj' together in one folder under ComfyUI's "
         f"models/LLM, or add it under \"models_8b\" in {catalog.user_file()}."
     )
+
+
+def valid_model(choice) -> bool | str:
+    return _valid(choice, _MODEL_MAP or _build_model_map(), SECTION, _gone)
+
+
+def _resolve_model_choice(choice: str) -> BaseChoice:
+    _refuse_problem(choice)
+    found = _find(_MODEL_MAP, _build_model_map, SECTION, choice)
+    if found is not None:
+        return found
+    raise RuntimeError(_gone(choice))
 
 
 def _with_transformers(
@@ -549,6 +567,10 @@ class MiniMaxH3PromptWriter8B:
     RETURN_NAMES = ("rewritten_prompt",) + OUTPUT_FIELDS
     FUNCTION = "rewrite"
     CATEGORY = CATEGORY
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, model=None):
+        return valid_model(model)
 
     @classmethod
     def IS_CHANGED(cls, library_pick="", repeat_last=False, unique_id=None, **kwargs):

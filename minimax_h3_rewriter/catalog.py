@@ -95,10 +95,14 @@ class CatalogEntry:
             parts.append(f"{self.download_gb:g} GB download")
         if self.vram:
             parts.append(self.vram)
-        label = " · ".join(parts)
+        label = LABEL_SEPARATOR.join(parts)
         if self.note:
-            label += f" — {self.note}"
+            label += f"{NOTE_SEPARATOR}{self.note}"
         return label
+
+
+LABEL_SEPARATOR = " \u00b7 "
+NOTE_SEPARATOR = " \u2014 "
 
 
 @dataclass
@@ -646,6 +650,33 @@ def entry_label(raw: dict) -> str:
         ).label
     except (TypeError, ValueError):
         return str(raw.get("name") or "")
+
+
+def current_label(section: str, remembered: str) -> str:
+    """The label an entry carries now, given the one a saved workflow remembers.
+
+    Everything after the name is description -- the size, the VRAM note, the
+    note -- and editing any of it changed the label, so every workflow saved
+    before the edit stopped at "Value not in list". The name is what an entry is
+    addressed by, and it is unique in its list, so it is what a remembered label
+    is matched on.
+
+    The name has to be followed by the end of the label or by one of the
+    separators ``label`` writes, or 'Qwen 4B' would answer for 'Qwen 4B Q8'. The
+    longest name wins, for the same reason in the other direction. A renamed
+    entry is not found: the name is the one thing that says it is the same one.
+    """
+    best = ""
+    found: dict | None = None
+    for raw in raw_entries(section):
+        name = str(raw.get("name") or "")
+        if not name or not remembered.startswith(name) or len(name) <= len(best):
+            continue
+        rest = remembered[len(name):]
+        if rest and not rest.startswith((LABEL_SEPARATOR, NOTE_SEPARATOR)):
+            continue
+        best, found = name, raw
+    return entry_label(found) if found is not None else ""
 
 
 def seed_names(section: str) -> set[str]:

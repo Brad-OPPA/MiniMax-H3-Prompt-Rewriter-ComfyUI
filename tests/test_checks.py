@@ -428,3 +428,61 @@ def test_the_loop_rule_never_quotes_the_loop_back():
     said = repair.instruct(issues)
     assert "0" * 4 not in said
     assert "Write each field once" in said
+
+
+STRIP_BLOCK = "\n".join(
+    [
+        "Picture 1: a black cat against a white wall.",
+        "Picture 2: a wooden fence with a gate.",
+        "Video 1: a man walking down a wet street.",
+        "Picture 3: a man beside a vintage car.",
+        "Video 2: a person in a blue dinosaur mask beside a car.",
+        "Picture 4: a turtle with a gemstone shell.",
+        "Audio 1: a deep male voice.",
+        "Audio 2: a synthetic voice.",
+        "Audio 3: an assertive male voice.",
+    ]
+)
+
+STRIP_ANSWER = " ".join(
+    f"<{word} {number}>"
+    for word, top in (("Picture", 4), ("Video", 2), ("Audio", 3))
+    for number in range(1, top + 1)
+)
+
+
+def ref_tags(having):
+    sections = {name: "" for name in REF_FIELDS}
+    sections["subject_definitions"] = STRIP_ANSWER
+    text = "\n\n".join(f"{name}: {sections[name]}" for name in REF_FIELDS)
+    issues = checks.review(text, sections, REF_FIELDS, task="Ref2VA", having=having)
+    return [issue.message for issue in issues if issue.code == "tags"]
+
+
+def test_a_badge_is_counted_as_what_the_block_calls_it():
+    assert sorted(checks.block_kinds(STRIP_BLOCK)) == sorted(
+        ["image"] * 4 + ["video"] * 2 + ["audio"] * 3
+    )
+    assert ref_tags(checks.block_kinds(STRIP_BLOCK)) == []
+
+
+def test_counting_sockets_is_what_went_wrong():
+    """The same answer, judged by the kinds on the sockets: two findings, both false."""
+    sockets = ["image"] * 5 + ["video"] + ["audio"] * 3
+    said = " ".join(ref_tags(sockets))
+    assert "<Video 2> is cited" in said
+    assert "<Picture 5>" in said
+
+
+def test_a_subject_line_is_not_an_asset():
+    assert checks.block_kinds("Subject 1: a red kite.\nPicture 1: a beach.") == ["image"]
+
+
+def test_labels_carried_in_on_previous_count_once_each():
+    block = "Picture 1: a beach.\nPicture 2: a pier.\npicture 2: the pier again.\nAudio 1: gulls."
+    assert sorted(checks.block_kinds(block)) == ["audio", "image", "image"]
+
+
+def test_no_block_means_nothing_was_shown():
+    assert checks.block_kinds("") == []
+    assert checks.block_kinds(None) == []

@@ -752,6 +752,16 @@ One thing worth knowing about disk: `hf_xet` keeps a chunk cache at
 drive the models live on. The free-space check this pack runs before a download
 only looks at the destination.
 
+**Behind an antivirus that inspects HTTPS.** Antiviruses that scan encrypted
+connections, and company proxies like them, re-sign huggingface.co with a root
+certificate of their own and install that root in the system's certificate store,
+which is why the browser still opens the site. The built-in transfer trusts that
+store as well as the usual certifi bundle, so it downloads wherever the browser
+does. `huggingface_hub` and `hf_xet` bring their own TLS and do not look there:
+behind such a filter they stop at `certificate verify failed`, and the node says
+so — switch back to the built-in transfer, or add huggingface.co to the filter's
+exclusions.
+
 ### MiniMax-H3 Prompt Writer (T2VA/I2VA/FL2VA/L2VA)
 
 The same three output fields, without the LoRA and without the 27B. MiniMax's own
@@ -1405,7 +1415,7 @@ run will not have.
 | Input | What it is for |
 | --- | --- |
 | `prompt` | The finished prompt to shorten. Any of the five tasks, and you do not have to say which: the text is split against every field name either family uses, and one with no field names at all is read whole as the description. |
-| `model` | Any instruction-following GGUF, from the same list the writers use — including `on disk:` and `ollama:` entries. This asks much less of a model than writing does, so the smallest entry in the list is a reasonable choice here even when it is not one there. |
+| `model` | Any instruction-following GGUF, from the same list the writers use — including `on disk:` and `ollama:` entries — and the **Model list** button under the node edits it. This asks much less of a model than writing does, so the smallest entry in the list is a reasonable choice here even when it is not one there. |
 | `detail` | How much comes back. `idea` is the bare line, ten words at most; `sentence` allows the place and the time of day; `paragraph` keeps one sentence per thing that happens, which is what a prompt with several shots needs if the order is to survive. |
 | `subjects` | How specifically people are named: `as written`, `age and gender`, or `impersonal`. |
 | `keep_camera` | Keep the shot size, the angle and the camera move. Off by default — the camera is usually the writer's invention rather than yours, and leaving it out lets the next rewrite choose again. |
@@ -1421,7 +1431,7 @@ Two outputs: `short_prompt`, and `scene` — the description with the scaffoldin
 taken off and nothing else done to it. No model has touched `scene`. Wire it
 when the deterministic half is all you wanted.
 
-![The MiniMax-H3 Prompt Reducer node with a Show Any node beside it: an options socket on the left, short_prompt and scene as the two outputs on the right, a tall prompt box holding a full I2VA prompt with its integrated_multimodal_description and [Shot 1] marker, then the widgets — a 35B model on disk, detail on idea, subjects on impersonal, keep_camera and keep_audio true, keep_style false, language reading Chinese, greedy true, a seed set to randomize, keep_model_loaded and bypass false, and an empty system_prompt box. Under the node the status line reads '110 words in, 33 characters out - 1 shot markers dropped - translated into Chinese', and below it the two Chinese sentences themselves, which the Show Any node repeats](docs/node_reducer.png)
+![The MiniMax-H3 Prompt Reducer node with a Show Any node beside it: an options socket on the left, short_prompt and scene as the two outputs on the right, a tall prompt box holding a full I2VA prompt with its integrated_multimodal_description and [Shot 1] marker, then the widgets — a 35B model on disk, detail on idea, subjects on impersonal, keep_camera and keep_audio true, keep_style false, language reading Chinese, greedy true, a seed set to randomize, keep_model_loaded and bypass false, an empty system_prompt box, and the Model list button under it. Under the node the status line reads '110 words in, 33 characters out - 1 shot markers dropped - translated into Chinese', and below it the two Chinese sentences themselves, which the Show Any node repeats](docs/node_reducer.png)
 
 *Four hundred words of cat, fence and dusk down to two short Chinese sentences, in 25 seconds on a 35B. Three axes are doing visible work at once: `detail` is on `idea`, so what comes back is the bare line; `keep_camera` put the low-angle tracking shot back into it; `keep_audio` folded the whole soundscape into the second sentence; and `keep_style` is off, so the `Live-action, cinematic` the prompt opened with is gone. The count is in characters rather than words because Chinese does not write the spaces a word count needs.
 
@@ -2352,7 +2362,9 @@ architecture, the block count and width, whether a projector is needed and which
 encoders it has to carry — and below the entries, greyed out, the models the pack
 found by itself, in your ComfyUI model folders or in an Ollama store: those are
 offered in the dropdown too, and there is nothing to edit, because they are files
-on disk rather than lines in a file.
+on disk rather than lines in a file. A file an entry has already downloaded is not
+repeated there: the entry carries an **on disk** tag instead, and the dropdown
+offers that model once, under the entry's name.
 
 ![The Model list window over the graph, headed “Model list” above the line “The models this node offers. Entries are kept in models.json in the ComfyUI user directory, so they outlive an update of the pack and are shared by every workflow.” Two tabs, Captioners lit and Guided writers beside it, over what that list requires: GGUF only, one file run by llama.cpp rather than a folder of safetensors; any architecture as long as the file is a language model with an embedded chat template; and a pair — the model and its ‘mmproj’ projector, from the same conversion. Below them two entries badged FROM THE PACK — Qwen2.5-Omni-3B, a 3.4 GB download needing about 5 GB, and Qwen2.5-Omni-7B, 5.8 GB needing about 8 — each showing its format, repository, file and projector in monospace, with Edit and Delete buttons at the right. Under a rule, “Found in your model folders. These are offered too, and there is nothing to edit: they are files on disk, not entries in the file.” heads three unbuttoned rows: on disk: Qwen3VL-8B-Instruct-Q4\_K\_M.gguf [+mmproj, vision, 5.4 GB], and the Omni 3B and 7B pairs, both marked vision and audio](docs/model_list_dialog.png)
 
@@ -2363,18 +2375,31 @@ in this list and not another one.*
 
 **Check it** answers as much as can be answered without moving any weights. A
 file already on this machine is read outright, so it reports the architecture and
-the shape and says whether the projector carries vision and audio:
+the shape, whether the model carries a chat template, and whether the projector
+carries vision and audio:
 
 ```text
 - 'Qwen2.5-Omni-7B-Q4_K_M.gguf' is a 'qwen2vl' model, 28 blocks of width 3584. That fits.
+- It carries its own chat template.
 - 'mmproj-Qwen2.5-Omni-7B-Q8_0.gguf' carries the vision and audio encoder.
 ```
+
+The chat template matters more than it looks. The 27B rewriter and the guided
+writers build their prompt from the model's own template, so a GGUF without one —
+typically the base conversion of a model rather than the instruct one — reads as a
+perfectly good model and then stops on the first run. There Check it refuses it,
+and renders the template once on a system and a user turn, so a template this
+pack cannot render is refused too. The captioners and the 8B and Omni rewriters
+leave the template to `llama-mtmd-cli`, which falls back to ChatML without one, so
+there a missing template is only a warning.
 
 Anything only on Hugging Face is asked what its metadata can say: a transformers
 repository is judged from its 4 KB `config.json`, and a GGUF repository is asked
 whether the files you named are in it — which is what catches a typo that would
 otherwise surface as a download failing minutes in, and fills in `download_gb`
-for you while it is there.
+for you while it is there. A GGUF's shape and chat template are in the file
+itself, so for one still on the Hub those wait for the first run — or for Check
+it again once the file is here.
 
 Two things the window will not do. It refuses a **network path** in `repo`,
 `file` or `mmproj`: it is reachable over the ComfyUI API, which has no CSRF
@@ -2387,10 +2412,17 @@ and every button that would write is dead, leaving **Open models.json**. What it
 lists in that state is the packaged copy, because that is what the dropdowns are
 offering too until the file parses again.
 
-Editing an entry's name, download size, VRAM note or note changes what the
-dropdown reads, and saved workflows remember that string. The form says so
-before it commits, and the graph you have open is moved across for you. Other
-workflows are not.
+Editing an entry's download size, VRAM note or note changes what the dropdown
+reads, and saved workflows remember that string — but an entry is found by its
+name, so a workflow holding the old label still runs it and moves to the new one
+when it is opened. Renaming the entry is different, since the name is what it is
+found by: the form says so before it commits, the graph you have open is moved
+across for you, and other workflows lose the choice.
+
+Deleting an entry leaves the nodes that used it as they are: a run stops and says
+the entry is gone, rather than picking another model and starting a download
+nobody asked for. The one exception is an entry whose file is already here —
+its `on disk:` row is back in the dropdown, and the nodes move to it.
 
 The file holds five lists with the same fields. **`models`** feeds the LoRA
 rewriter and has to be Qwen3.6-27B:
@@ -2496,11 +2528,13 @@ three sections, because both are what people actually type. Two things to watch:
 For a whole folder of GGUFs you keep elsewhere, an entry each is the long way
 round: point ComfyUI's `extra_model_paths.yaml` at it under the key `LLM` and
 every file in it is offered automatically, with `on disk:` in front of the name.
+If that folder comes first, new downloads go into it; a model already in any
+`LLM` folder is found where it is and not fetched again.
 
 Add an entry, **refresh the browser tab** — ComfyUI need not restart — and it is
-in the dropdown. Keep `name` stable: saved workflows remember the label, and a
-node whose stored choice has vanished says so by name instead of silently picking
-something else.
+in the dropdown. Keep `name` stable: it is what a saved workflow finds the entry
+by. A node whose stored choice has vanished stops before anything runs and says
+so by name, instead of silently picking something else.
 
 #### When the list itself is broken
 

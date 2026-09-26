@@ -114,13 +114,21 @@ def _take(items) -> list[dict]:
     ``items`` is an iterable of ``(slot, kind, value)``; the kind may be None and
     is then read off the value. Labels are positional on purpose -- ``ref1-image``
     rather than a file name, which a node cannot see anyway.
+
+    A fourth member is what the prompt counts the reference as, where that is
+    not its kind: a picture the Universal Writer's strip made a clip is ``video``,
+    one made a subject is ``""``. It is kept as ``as``, for the self-check that
+    reads the record later -- the kind stays the kind, since the thumbnail and
+    the library's shape warning are about the value.
     """
     taken = []
-    for slot, kind, value in items:
+    for slot, kind, value, *counted in items:
         if value is None:
             continue
         kind = kind or kind_of(value)
         found = {"label": f"ref{len(taken) + 1}-{kind}", "slot": slot, "kind": kind}
+        if counted and counted[0] != kind:
+            found["as"] = counted[0]
         try:
             found.update(MEASURE.get(kind, lambda _value: {})(value))
         except Exception as error:

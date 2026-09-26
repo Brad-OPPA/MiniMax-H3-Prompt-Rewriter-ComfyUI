@@ -66,8 +66,11 @@ from .nodes import (
     _resolve_captioner_choice,
     caption_question,
     captioner_choices,
+    named_verdicts,
     next_index,
     slot_instructions,
+    valid_captioner,
+    valid_writer,
     writer_choices,
 )
 from .multi_caption import _check_encoders
@@ -92,6 +95,8 @@ ROLE_AUDIO = "Audio"
 IMAGE_ROLES = (ROLE_PICTURE, ROLE_SUBJECT, ROLE_VIDEO)
 
 FIXED_ROLE = {"video": ROLE_VIDEO, "audio": ROLE_AUDIO}
+
+ROLE_KIND = {ROLE_PICTURE: "image", ROLE_VIDEO: "video", ROLE_AUDIO: "audio"}
 
 DESCRIPTION = (
     "Describes every connected reference and writes the finished MiniMax-H3 prompt, in one "
@@ -522,6 +527,13 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
         )
 
     @classmethod
+    def validate_inputs(cls, caption_model=None, writer_model=None, references=None):
+        return named_verdicts(
+            ("caption_model", valid_captioner(caption_model)),
+            ("writer_model", valid_writer(writer_model)),
+        )
+
+    @classmethod
     def execute(
         cls,
         task,
@@ -719,6 +731,7 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
             progress.update(len(assets), f"{described}\n{block}")
 
         material = "" if task == TEXT_TASK else block
+        shown = checks.block_kinds(material)
         text = _guided_text(
             task, writer_model, prompt, resolution, duration, material,
             greedy, seed, keep_model_loaded, settings, progress, system_prompt,
@@ -732,14 +745,14 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
                 greedy, seed, keep_model_loaded, settings, progress, system_prompt,
             ),
             names, task=task, duration=duration,
-            having=[item.kind for item in assets],
+            having=shown,
             fallback=guide_prompt.BODY_FIELD[task], settings=settings,
         )
         _head, sections = split_sections(text, names, fallback=guide_prompt.BODY_FIELD[task])
         _report(
             progress, text, sections, names,
             task=task, duration=duration,
-            having=[item.kind for item in assets],
+            having=shown,
             settings=settings,
         )
 
@@ -747,7 +760,10 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
         outputs = (text,) + fields + (block, "\n".join(captions))
         memory.keep(
             cls.hidden.unique_id, "MiniMaxH3UniversalWriter", outputs, given,
-            references=snapshot.take((item.slot, item.kind, item.value) for item in assets),
+            references=snapshot.take(
+                (item.slot, item.kind, item.value, ROLE_KIND.get(item.role, ""))
+                for item in assets
+            ),
             fields=ALL_FIELDS,
         )
         return io.NodeOutput(*outputs, handed_on)

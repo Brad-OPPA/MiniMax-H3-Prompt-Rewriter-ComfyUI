@@ -29,6 +29,7 @@ from .nodes import (
     OPTIONS_TYPE,
     run_messages,
     single_prompt,
+    valid_writer,
     writer_choices,
 )
 from .progress import NodeProgress
@@ -227,6 +228,10 @@ class MiniMaxH3PromptReducer(io.ComfyNode):
             ],
             hidden=[io.Hidden.unique_id],
         )
+
+    @classmethod
+    def validate_inputs(cls, model=None):
+        return valid_writer(model)
 
     @classmethod
     def execute(

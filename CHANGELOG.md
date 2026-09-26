@@ -6,6 +6,111 @@ The version in `pyproject.toml`, the git tag and the release on GitHub always sa
 the same thing; the release workflow refuses a tag that disagrees with
 `pyproject.toml`, or one that neither changelog has a section for.
 
+## 0.27.0 - 2026-09-26
+
+### Added
+
+- **Check it reads the chat template.** The 27B rewriter and the guided writers
+  build their prompt from the model's own template, so a GGUF without one -- the
+  base conversion of a model rather than the instruct one, typically -- passed
+  every check and then stopped on the first run with "this GGUF has no embedded
+  chat template". On those lists Check it now refuses such a file, and renders
+  the template once on a system and a user turn, so one the pack cannot render
+  is refused too. The captioners and the 8B and Omni rewriters leave the template
+  to `llama-mtmd-cli`, which falls back to ChatML, so there a missing one is a
+  warning.
+
+- **The Prompt Reducer has the Model list button.** It reads the writer list, but
+  was missing from the table of nodes that do: no button, and an entry added in
+  the window never reached its dropdown until the page was reloaded.
+
+- **An `on disk` tag in the Model list window** on every entry whose files are
+  already here, so choosing it downloads nothing.
+
+### Changed
+
+- **One row per model.** An entry that had downloaded its file was offered twice:
+  under its own name, and again as the `on disk:` row the folder scan found for
+  that same file. The scanned row is now left out when an entry already stands
+  for it -- on the machine this was written on, six such pairs across the five
+  lists. A workflow saved with the `on disk:` label keeps running the same file,
+  and is moved to the entry's label when it is opened.
+
+- **A label saved before an edit keeps working.** Changing an entry's download
+  size, VRAM note or note changed its label, and every workflow saved with the
+  old one stopped at ComfyUI's "Value not in list". An entry is now found by its
+  name: the old label passes validation, runs the entry, and is replaced by the
+  new one when the workflow is opened. Renaming the entry itself still loses the
+  choice in other workflows, and the edit form says which of the two a change is.
+
+- **A model that is gone says so in words.** A dropdown value the list no longer
+  has failed with "Value not in list" and forty labels; it now fails with what
+  to do about it -- pick another entry, or add it back with the Model list
+  button. Only what the dropdown can name passes: a path typed into an API
+  prompt is refused as before.
+
+- **Deleting an entry whose file is here moves its nodes to that file.** Its
+  `on disk:` row comes back into the dropdown, and the nodes in the open graph
+  that used the entry move to it. With nothing on disk they keep the value and
+  the run says the entry is gone, rather than picking another model and starting
+  a download.
+
+- **The Universal Rewriter checks only the base the chosen tab runs.** An 8B entry
+  deleted from the list stopped a graph that was running the 27B.
+
+- **Editing the list reaches every node, not just the ones on the canvas.** A node
+  added from the library afterwards, a workflow tab switched to later and a combo
+  promoted out of a subgraph all went on offering the old list until the page
+  was reloaded. The window now has ComfyUI re-read the node definitions after
+  every change, in both renderers; it used to do that under Nodes 2.0 only.
+
+### Fixed
+
+- **A model already downloaded was downloaded again once `extra_model_paths.yaml`
+  named an `LLM` folder of its own.** ComfyUI puts such a folder first, and the
+  nodes looked for an entry's files in the first `LLM` folder only -- so
+  everything fetched into `ComfyUI/models/LLM` before the line was added counted
+  as missing, 19.5 GB for the 27B. Files are now looked for in every `LLM`
+  folder, and only a new download goes to the first one. An interrupted second
+  copy may have left a `.part` file in the new folder; it can be deleted.
+
+- **A model and its projector put flat in an `LLM` folder were downloaded
+  again.** A pair is fetched into a folder named after its repository, and that
+  folder was the only place a pair was looked for -- so a pair sitting flat in
+  `models/LLM`, fetched by an older version or by hand, counted as missing while
+  Check it reported it on disk. 5 GB of Qwen3-VL-8B started downloading beside an
+  exact copy of itself. A flat pair now counts when both files are in the same
+  folder, and Check it asks the same question the node does. A single GGUF put by
+  hand into a folder named after its repository is found too.
+
+- **Downloads work behind an antivirus that inspects HTTPS.** An antivirus that
+  scans encrypted connections re-signs huggingface.co with a root certificate it
+  installs in the Windows store, so the browser opens the site and every
+  download from this pack stopped at "self-signed certificate in certificate
+  chain": `requests` checks certifi's bundle and nothing else. The pack's own
+  requests -- the file listing, the transfer, Check it, the guides, the llama.cpp
+  binaries -- now trust the system store as well as certifi. Verification stays
+  on. A certificate that neither trusts gets a message saying what is likely in
+  the way, and does not spend five retries on it. `huggingface_hub` and `hf_xet`
+  bring their own TLS, so the `huggingface_hub` downloader still fails there; its
+  error now says so and points at the built-in transfer.
+
+- **The Universal Writer's self-check counted sockets, not labels.** A picture
+  whose badge in the strip makes it a clip is `Video N` in the block the writer
+  reads, and one made a subject is `Subject N`; the check still counted it as a
+  picture. So a correct `<Video 2>` was reported as "cited, but only 1 video(s)
+  reached this node", a `<Picture 5>` that was never written was reported as not
+  cited -- and with `fix_once` on, the writer was asked to write the answer again
+  to agree. Labels carried in on `previous` were not counted either. The check
+  now reads the block the writer was given, and the memory and library checks
+  count a badged picture as what the prompt calls it.
+
+- **A download leaves lines in the console.** Only the caption under the node
+  showed one, so a run that sat on a download for a minute and was cancelled left
+  the console blank. It now says what is fetched into which folder, where a
+  transfer stopped and that the next run carries on from there, and how many
+  files arrived.
+
 ## 0.26.0 - 2026-09-14
 
 ### Added

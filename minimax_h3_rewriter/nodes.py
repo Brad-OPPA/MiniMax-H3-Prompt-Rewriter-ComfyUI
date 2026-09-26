@@ -5,9 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass
-
-import re
+from dataclasses import dataclass, replace
 
 from . import (
     aspect,
@@ -27,6 +25,7 @@ from . import (
     llamacpp,
     media,
     memory,
+    model_sections,
     mtmd_engine,
     ollama_store,
     repair,
@@ -59,7 +58,11 @@ from .paths import (
     adapter_is_complete,
     base_model_is_complete,
     catalog_file,
+    local_dir_for_repo,
     models_root,
+    present_file,
+    present_folder,
+    present_pair,
     refuse_network_path,
     resolve_source,
 )
@@ -116,12 +119,31 @@ OLLAMA_PREFIX = "ollama: "
 
 @dataclass
 class Choice:
-    """Where a chosen model lives and how it has to be run."""
+    """Where a chosen model lives and how it has to be run.
+
+    ``copy_of`` is set on a scanned row whose file is what a list entry already
+    downloaded: the entry's label. Such a row is the same model twice, so it is
+    kept out of the dropdown -- but kept here, because a workflow saved before
+    it was hidden still names it, and it still resolves.
+    """
 
     reference: str
     fmt: str = FORMAT_TRANSFORMERS
     file: str = ""
     local: bool = False
+    copy_of: str = ""
+
+
+def _holding(section: str, entry: catalog.CatalogEntry) -> tuple[str, tuple[str, ...]]:
+    """An entry's label and where its files already are, for ``model_sections.copy_of``."""
+    return entry.label, model_sections.on_disk(
+        section, entry.fmt, entry.repo, entry.file, entry.mmproj
+    )
+
+
+def _shown(mapping: dict) -> list[str]:
+    """The labels a dropdown offers: everything but the scanned copies of entries."""
+    return [label for label, found in mapping.items() if not found.copy_of]
 
 
 _MODEL_MAP: dict[str, Choice] = {}
@@ -129,19 +151,26 @@ _MODEL_MAP: dict[str, Choice] = {}
 
 def _build_model_map() -> dict[str, Choice]:
     mapping: dict[str, Choice] = {}
+    held = []
     try:
         for entry in catalog.load():
             mapping[entry.label] = Choice(reference=entry.repo, fmt=entry.fmt, file=entry.file)
+            held.append(_holding("models", entry))
     except Exception:
         log.warning("[minimax_h3_rewriter._build_model_map] catalog unreadable", exc_info=True)
     try:
         for label, path in discovery.scan_local():
-            mapping[f"{LOCAL_PREFIX}{label}"] = Choice(reference=path, local=True)
+            mapping[f"{LOCAL_PREFIX}{label}"] = Choice(
+                reference=path, local=True, copy_of=model_sections.copy_of(held, path)
+            )
     except Exception:
         log.warning("[minimax_h3_rewriter._build_model_map] local scan failed", exc_info=True)
     try:
         for label, path in discovery.scan_local_gguf():
-            mapping[f"{LOCAL_PREFIX}{label}"] = Choice(reference=path, fmt=FORMAT_GGUF, local=True)
+            mapping[f"{LOCAL_PREFIX}{label}"] = Choice(
+                reference=path, fmt=FORMAT_GGUF, local=True,
+                copy_of=model_sections.copy_of(held, path),
+            )
     except Exception:
         log.warning("[minimax_h3_rewriter._build_model_map] gguf scan failed", exc_info=True)
 
@@ -166,37 +195,101 @@ def _announce(choices: list[str]) -> list[str]:
     return [f"{PROBLEM_PREFIX}{trouble} — showing the packaged list instead"] + choices
 
 
+def _problem_text(choice: str) -> str:
+    return (
+        f"{choice[len(PROBLEM_PREFIX):]}\n\nFix {catalog.user_file()} — the 'Model list' "
+        f"button opens a window with 'Open models.json' in it — then refresh the browser "
+        f"tab. ComfyUI need not restart. The window itself will not write to a file it "
+        f"cannot parse, since saving over one would replace your entries with the "
+        f"packaged list."
+    )
+
+
 def _refuse_problem(choice: str) -> None:
     if choice.startswith(PROBLEM_PREFIX):
-        raise RuntimeError(
-            f"{choice[len(PROBLEM_PREFIX):]}\n\nFix {catalog.user_file()} — the 'Model list' "
-            f"button opens a window with 'Open models.json' in it — then refresh the browser "
-            f"tab. ComfyUI need not restart. The window itself will not write to a file it "
-            f"cannot parse, since saving over one would replace your entries with the "
-            f"packaged list."
-        )
+        raise RuntimeError(_problem_text(choice))
+
+
+def _find(mapping: dict, build, section: str, choice: str):
+    """A label's ``Choice``, whether it is in the dropdown, hidden, or remembered.
+
+    The cached map first, as it always was; a fresh one if the file or the disk
+    changed since; and last the label the entry carries now, for a workflow saved
+    before its size, VRAM note or note was edited.
+    """
+    found = mapping.get(choice)
+    if found is None:
+        mapping = build()
+        found = mapping.get(choice)
+    if found is None:
+        found = mapping.get(model_sections.label_now(mapping, section, choice))
+    return found
+
+
+def _valid(choice, mapping: dict, section: str, gone) -> bool | str:
+    """``VALIDATE_INPUTS`` for one model dropdown: ``True``, or what to do instead.
+
+    ComfyUI's own check stops at "Value not in list" for anything the dropdown
+    does not show word for word, and two such labels still name exactly one
+    model: an entry's label from before its note was edited, and the scanned row
+    of a file an entry now stands for. Both are let through, and the resolver
+    maps them when the node runs. Anything else gets the resolver's own message,
+    which says what to do -- in place of a list of forty labels.
+
+    Only what the dropdown can name passes. The resolvers also take a path or a
+    repository id, for a value arriving over a wire; letting a typed one through
+    here would have the server look at whatever path an API prompt names.
+
+    ``None`` is a wired input, whose value does not exist until the graph runs.
+    """
+    if choice is None:
+        return True
+    choice = str(choice)
+    if choice.startswith(PROBLEM_PREFIX):
+        return _problem_text(choice)
+    if model_sections.label_now(mapping, section, choice):
+        return True
+    return gone(choice)
+
+
+def named_verdicts(*verdicts: tuple[str, bool | str]) -> bool | str:
+    """One answer from a validator that checks several dropdowns.
+
+    ComfyUI prints whatever comes back under *every* input the validator names,
+    so a message about ``writer_model`` also appeared under ``caption_model``.
+    Each failure carries the name of its own field, and there is one line per
+    failing field.
+    """
+    failed = [f"{name}: {found}" for name, found in verdicts if found is not True]
+    return "\n".join(failed) if failed else True
 
 
 def model_choices() -> list[str]:
-    choices = list(_build_model_map())
+    choices = _shown(_build_model_map())
     return _announce(choices or [BASE_MODEL_REPO])
+
+
+def _model_gone(choice: str) -> str:
+    return (
+        f"'{choice}' is not in the model list any more. Pick another entry, or add it back "
+        f"with the 'Model list' button ({catalog.user_file()})."
+    )
+
+
+def valid_model(choice) -> bool | str:
+    return _valid(choice, _MODEL_MAP or _build_model_map(), "models", _model_gone)
 
 
 def _resolve_model_choice(choice: str) -> Choice:
     _refuse_problem(choice)
-    found = _MODEL_MAP.get(choice)
-    if found is None:
-        found = _build_model_map().get(choice)
+    found = _find(_MODEL_MAP, _build_model_map, "models", choice)
     if found is not None:
         return found
     if choice and choice.lower().endswith(".gguf") and os.path.isfile(choice):
         return Choice(reference=choice, fmt=FORMAT_GGUF, local=True)
     if choice and ("/" in choice or os.path.isabs(choice)):
         return Choice(reference=choice)
-    raise RuntimeError(
-        f"'{choice}' is not in the model list any more. Pick another entry, or add it back "
-        f"with the 'Model list' button ({catalog.user_file()})."
-    )
+    raise RuntimeError(_model_gone(choice))
 
 
 _WRITER_MAP: dict[str, Choice] = {}
@@ -211,14 +304,19 @@ def _build_writer_map() -> dict[str, Choice]:
     4B on an 8 GB card a real answer rather than a consolation prize.
     """
     mapping: dict[str, Choice] = {}
+    held = []
     try:
         for entry in catalog.writers():
             mapping[entry.label] = Choice(reference=entry.repo, fmt=FORMAT_GGUF, file=entry.file)
+            held.append(_holding("writers", replace(entry, fmt=FORMAT_GGUF)))
     except Exception:
         log.warning("[minimax_h3_rewriter._build_writer_map] catalog unreadable", exc_info=True)
     try:
         for label, path in discovery.scan_writer_gguf():
-            mapping[f"{LOCAL_PREFIX}{label}"] = Choice(reference=path, fmt=FORMAT_GGUF, local=True)
+            mapping[f"{LOCAL_PREFIX}{label}"] = Choice(
+                reference=path, fmt=FORMAT_GGUF, local=True,
+                copy_of=model_sections.copy_of(held, path),
+            )
     except Exception:
         log.warning("[minimax_h3_rewriter._build_writer_map] gguf scan failed", exc_info=True)
     try:
@@ -233,24 +331,30 @@ def _build_writer_map() -> dict[str, Choice]:
 
 
 def writer_choices() -> list[str]:
-    choices = list(_build_writer_map())
+    choices = _shown(_build_writer_map())
     return _announce(choices or ["(no GGUF model found — see the model list)"])
 
 
-def _resolve_writer_choice(choice: str) -> Choice:
-    _refuse_problem(choice)
-    found = _WRITER_MAP.get(choice)
-    if found is None:
-        found = _build_writer_map().get(choice)
-    if found is not None:
-        return found
-    if choice and choice.lower().endswith(".gguf") and os.path.isfile(choice):
-        return Choice(reference=choice, fmt=FORMAT_GGUF, local=True)
-    raise RuntimeError(
+def _writer_gone(choice: str) -> str:
+    return (
         f"'{choice}' is not in the writer model list any more. Pick another entry, drop a "
         f"'.gguf' into ComfyUI's models/LLM folder, or add it under \"writers\" in "
         f"{catalog.user_file()}."
     )
+
+
+def valid_writer(choice) -> bool | str:
+    return _valid(choice, _WRITER_MAP or _build_writer_map(), "writers", _writer_gone)
+
+
+def _resolve_writer_choice(choice: str) -> Choice:
+    _refuse_problem(choice)
+    found = _find(_WRITER_MAP, _build_writer_map, "writers", choice)
+    if found is not None:
+        return found
+    if choice and choice.lower().endswith(".gguf") and os.path.isfile(choice):
+        return Choice(reference=choice, fmt=FORMAT_GGUF, local=True)
+    raise RuntimeError(_writer_gone(choice))
 
 
 @dataclass
@@ -261,6 +365,7 @@ class CaptionerChoice:
     file: str = ""
     mmproj: str = ""
     local: bool = False
+    copy_of: str = ""
 
 
 _CAPTIONER_MAP: dict[str, CaptionerChoice] = {}
@@ -268,6 +373,7 @@ _CAPTIONER_MAP: dict[str, CaptionerChoice] = {}
 
 def _build_captioner_map() -> dict[str, CaptionerChoice]:
     mapping: dict[str, CaptionerChoice] = {}
+    held = []
     try:
         for entry in catalog.captioners():
             if not entry.mmproj:
@@ -279,12 +385,14 @@ def _build_captioner_map() -> dict[str, CaptionerChoice]:
             mapping[entry.label] = CaptionerChoice(
                 reference=entry.repo, file=entry.file, mmproj=entry.mmproj
             )
+            held.append(_holding("captioners", replace(entry, fmt=FORMAT_GGUF)))
     except Exception:
         log.warning("[minimax_h3_rewriter._build_captioner_map] catalog unreadable", exc_info=True)
     try:
         for label, model_path, mmproj_path in discovery.scan_captioner_gguf():
             mapping[f"{LOCAL_PREFIX}{label}"] = CaptionerChoice(
-                reference=model_path, mmproj=mmproj_path, local=True
+                reference=model_path, mmproj=mmproj_path, local=True,
+                copy_of=model_sections.copy_of(held, model_path, mmproj_path),
             )
     except Exception:
         log.warning("[minimax_h3_rewriter._build_captioner_map] gguf scan failed", exc_info=True)
@@ -302,22 +410,28 @@ def _build_captioner_map() -> dict[str, CaptionerChoice]:
 
 
 def captioner_choices() -> list[str]:
-    choices = list(_build_captioner_map())
+    choices = _shown(_build_captioner_map())
     return _announce(choices or ["(no multimodal model found — see the model list)"])
 
 
-def _resolve_captioner_choice(choice: str) -> CaptionerChoice:
-    _refuse_problem(choice)
-    found = _CAPTIONER_MAP.get(choice)
-    if found is None:
-        found = _build_captioner_map().get(choice)
-    if found is not None:
-        return found
-    raise RuntimeError(
+def _captioner_gone(choice: str) -> str:
+    return (
         f"'{choice}' is not in the captioner list any more. Pick another entry, put a '.gguf' "
         f"and its 'mmproj' together in one folder under ComfyUI's models/LLM, or add it under "
         f"\"captioners\" in {catalog.user_file()}."
     )
+
+
+def valid_captioner(choice) -> bool | str:
+    return _valid(choice, _CAPTIONER_MAP or _build_captioner_map(), "captioners", _captioner_gone)
+
+
+def _resolve_captioner_choice(choice: str) -> CaptionerChoice:
+    _refuse_problem(choice)
+    found = _find(_CAPTIONER_MAP, _build_captioner_map, "captioners", choice)
+    if found is not None:
+        return found
+    raise RuntimeError(_captioner_gone(choice))
 
 
 def _verify_base_model(
@@ -337,6 +451,7 @@ def _verify_base_model(
         report = discovery.inspect_local(reference, shape)
     else:
         repo_id, local_dir = resolve_source(reference, default_repo)
+        local_dir = present_folder(reference, default_repo) or local_dir
         if os.path.isdir(local_dir) and discovery.read_local_config(local_dir):
             report = discovery.inspect_local(local_dir, shape)
         elif repo_id:
@@ -384,16 +499,32 @@ def _fetch(
             )
             title += f" (no {DOWNLOADER_HUB} here, using the built-in transfer)"
 
-    reporter = TransferReporter(progress, 1, title)
-    backend.sync_repo(
-        repo_id,
-        dest_dir,
-        allow=allow,
-        skip_suffixes=skip_suffixes,
-        on_progress=reporter,
-        on_status=lambda message: progress.text(message, force=True),
-        on_total=reporter.set_total,
+    log.info(
+        "[minimax_h3_rewriter._fetch] %s: fetching %s into %s",
+        repo_id, ", ".join(allow) if allow else "the repository", dest_dir,
     )
+    reporter = TransferReporter(progress, 1, title)
+    try:
+        backend.sync_repo(
+            repo_id,
+            dest_dir,
+            allow=allow,
+            skip_suffixes=skip_suffixes,
+            on_progress=reporter,
+            on_status=lambda message: progress.text(message, force=True),
+            on_total=reporter.set_total,
+        )
+    except Exception as error:
+        log.info(
+            "[minimax_h3_rewriter._fetch] %s: stopped at %s of %s (%s). What arrived stays "
+            "in %s, and the next run carries on from it.",
+            repo_id,
+            download.human_size(reporter.transferred),
+            download.human_size(reporter.total_bytes),
+            "cancelled" if hub_sync._is_interrupt(error) else type(error).__name__,
+            dest_dir,
+        )
+        raise
 
 
 def _ensure_present(value: str, spec: dict, settings: dict, progress: NodeProgress) -> str:
@@ -403,8 +534,9 @@ def _ensure_present(value: str, spec: dict, settings: dict, progress: NodeProgre
     whether to download and how to download it are both read here now.
     """
     repo_id, local_dir = resolve_source(value, spec["default_repo"])
-    if spec["complete"](local_dir):
-        return local_dir
+    found = present_folder(value, spec["default_repo"], spec["complete"])
+    if found:
+        return found
 
     if not repo_id:
         raise RuntimeError(
@@ -431,10 +563,11 @@ def _ensure_file(repo_id: str, filename: str, label: str, settings: dict, progre
     if not filename:
         raise RuntimeError(f"{label}: no file name given for repository '{repo_id}'.")
 
+    found = present_file(repo_id, filename)
+    if found:
+        return found
     on_disk = catalog_file(repo_id, filename)
     if on_disk:
-        if os.path.isfile(on_disk):
-            return on_disk
         raise RuntimeError(
             f"{label}: '{on_disk}' does not exist. The entry points at a folder on this "
             f"machine, so nothing is downloaded — check the path and the file name."
@@ -446,8 +579,6 @@ def _ensure_file(repo_id: str, filename: str, label: str, settings: dict, progre
         )
 
     destination = os.path.join(models_root(), filename)
-    if os.path.isfile(destination) and os.path.getsize(destination) > 0:
-        return destination
     if not settings["auto_download"]:
         raise RuntimeError(
             f"{label} is missing from '{destination}' and auto_download is off. "
@@ -472,25 +603,24 @@ def _ensure_pair(
     the pair stays obvious to the local scan: one projector beside one model
     needs no name matching at all.
     """
+    found = present_pair(repo_id, file, mmproj)
+    if found:
+        return found
     on_disk = tuple(catalog_file(repo_id, name) for name in (file, mmproj))
     if all(on_disk):
         missing = [path for path in on_disk if not os.path.isfile(path)]
-        if missing:
-            raise RuntimeError(
-                f"{label}: {', '.join(repr(path) for path in missing)} does not exist. The entry "
-                f"points at a folder on this machine, so nothing is downloaded — check the path "
-                f"and the file names."
-            )
-        return on_disk[0], on_disk[1]
+        raise RuntimeError(
+            f"{label}: {', '.join(repr(path) for path in missing)} does not exist. The entry "
+            f"points at a folder on this machine, so nothing is downloaded — check the path "
+            f"and the file names."
+        )
 
-    directory = os.path.join(models_root(), repo_id.rstrip("/").split("/")[-1])
+    directory = local_dir_for_repo(repo_id)
     targets = tuple(os.path.join(directory, name) for name in (file, mmproj))
 
     def complete() -> bool:
         return all(os.path.isfile(path) and os.path.getsize(path) > 0 for path in targets)
 
-    if complete():
-        return targets
     if os.path.isabs(repo_id):
         raise RuntimeError(
             f"{label}: '{repo_id}' is not a folder on this machine. Give an existing folder "
@@ -1200,6 +1330,10 @@ class MiniMaxH3PromptRewriter:
     CATEGORY = CATEGORY
 
     @classmethod
+    def VALIDATE_INPUTS(cls, model=None):
+        return valid_model(model)
+
+    @classmethod
     def IS_CHANGED(cls, library_pick="", repeat_last=False, unique_id=None, **kwargs):
         """Whether what this node would hand back without running has changed.
 
@@ -1671,6 +1805,10 @@ class MiniMaxH3GuidedWriter:
     CATEGORY = CATEGORY
 
     @classmethod
+    def VALIDATE_INPUTS(cls, model=None):
+        return valid_writer(model)
+
+    @classmethod
     def IS_CHANGED(cls, library_pick="", repeat_last=False, unique_id=None, **kwargs):
         """Whether what this node would hand back without running has changed.
 
@@ -1846,6 +1984,10 @@ class MiniMaxH3GuidedWriterRef:
     RETURN_NAMES = ("rewritten_prompt",) + REF_OUTPUT_FIELDS
     FUNCTION = "write"
     CATEGORY = CATEGORY
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, model=None):
+        return valid_writer(model)
 
     @classmethod
     def IS_CHANGED(cls, library_pick="", repeat_last=False, unique_id=None, **kwargs):
@@ -2177,7 +2319,7 @@ def caption_question(role: str, length: str, question: Question | None = None) -
     return f"{question.text} {NO_REASONING}"
 
 
-_ASSET_LINE = re.compile(r"^[ \t]*(Subject|Picture|Video|Audio)[ \t]+(\d+)[ \t]*:", re.IGNORECASE | re.MULTILINE)
+_ASSET_LINE = checks.ASSET_LINE
 
 
 def next_index(previous: str, role: str) -> int:
@@ -2328,6 +2470,10 @@ class MiniMaxH3ReferenceCaption:
     RETURN_NAMES = ("reference_assets", "caption")
     FUNCTION = "describe"
     CATEGORY = CATEGORY
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, model=None):
+        return valid_captioner(model)
 
     def describe(
         self,

@@ -668,6 +668,13 @@ python -m pip install huggingface_hub hf_xet
 （`HF_XET_CACHE`）存一份分块缓存，在 Windows 上它落在 `C:` 盘 —— 不管模型本身放在
 哪个盘。本节点包在下载前做的剩余空间检查，只看目标位置。
 
+**在会检查 HTTPS 的杀毒软件后面。** 扫描加密连接的杀毒软件以及同类的公司代理，
+会用它们自己的根证书给 huggingface.co 重新签名，并把这个根证书装进系统的证书存储 ——
+所以浏览器照样能打开这个网站。内置的传输在常用的 certifi 证书包之外也信任这个存储，
+所以浏览器能下载的地方它也能下载。`huggingface_hub` 和 `hf_xet` 自带 TLS，不看那里：
+在这种过滤器后面它们会停在 `certificate verify failed` 上，节点会把这一点说出来 ——
+换回内置的传输，或者把 huggingface.co 加进过滤器的例外列表。
+
 ### MiniMax-H3 Prompt Writer (T2VA/I2VA/FL2VA/L2VA) 提示词写作节点
 
 同样那三个输出字段，不用 LoRA，也不用 27B。MiniMax 官方的
@@ -1240,7 +1247,7 @@ H3 的提示词是 H3 形状的，而 Wan、混元和可灵不是。以及给你
 | 输入 | 用来做什么 |
 |---|---|
 | `prompt` | 要缩短的那段写好的提示词。五个任务的都行，而且你不必说是哪一个：文本会按两族格式用过的每一个字段名去切，而一个字段名都没有的文本，会被整段当作描述来读。 |
-| `model` | 任何一个会跟随指令的 GGUF，来自写作节点用的同一份列表 —— `on disk:` 和 `ollama:` 条目也在内。这件事对模型的要求比写作低得多，所以列表里最小的那一条在这儿是个合理的选择，哪怕它在那边不是。 |
+| `model` | 任何一个会跟随指令的 GGUF，来自写作节点用的同一份列表 —— `on disk:` 和 `ollama:` 条目也在内 —— 节点下面的 **Model list** 按钮就是用来编辑它的。这件事对模型的要求比写作低得多，所以列表里最小的那一条在这儿是个合理的选择，哪怕它在那边不是。 |
 | `detail` | 回来多少东西。`idea` 是光秃秃的一行，至多十个词；`sentence` 允许带上地点和一天中的时辰；`paragraph` 给每一件发生的事各留一句话 —— 一段有好几个镜头的提示词，想让顺序活下来，就需要这一档。 |
 | `subjects` | 人被点名到多具体：`as written`、`age and gender`，或者 `impersonal`。 |
 | `keep_camera` | 保留景别、机位角度和镜头运动。默认关闭 —— 镜头通常是写作模型的发明，而不是你的，把它留在外面，下一次重写就能重新选一遍。 |
@@ -1255,7 +1262,7 @@ H3 的提示词是 H3 形状的，而 Wan、混元和可灵不是。以及给你
 两个输出：`short_prompt`，以及 `scene` —— 就是拆掉脚手架、别的什么都没做过的那段
 描述。没有任何模型碰过 `scene`。要是你想要的只是确定性的那一半，就接它。
 
-![MiniMax-H3 提示词精简器节点，旁边是一个 Show Any 节点：左边一个 options 插槽，右边两个输出 short_prompt 和 scene，一个高高的提示词框里装着一整段 I2VA 提示词，带着它的 integrated_multimodal_description 和 [Shot 1] 标记，然后是那些小部件 —— 一个硬盘上的 35B 模型、detail 设为 idea、subjects 设为 impersonal、keep_camera 和 keep_audio 打开、keep_style 关闭、language 写着 Chinese、greedy 打开、种子设为 randomize、keep_model_loaded 和 bypass 关闭，以及一个空的 system_prompt 框。节点下面那行状态写着 “110 words in, 33 characters out - 1 shot markers dropped - translated into Chinese”，再下面就是那两句中文本身，Show Any 节点把它们又显示了一遍](docs/node_reducer.png)
+![MiniMax-H3 提示词精简器节点，旁边是一个 Show Any 节点：左边一个 options 插槽，右边两个输出 short_prompt 和 scene，一个高高的提示词框里装着一整段 I2VA 提示词，带着它的 integrated_multimodal_description 和 [Shot 1] 标记，然后是那些小部件 —— 一个硬盘上的 35B 模型、detail 设为 idea、subjects 设为 impersonal、keep_camera 和 keep_audio 打开、keep_style 关闭、language 写着 Chinese、greedy 打开、种子设为 randomize、keep_model_loaded 和 bypass 关闭，以及一个空的 system_prompt 框，框下面是 Model list 按钮。节点下面那行状态写着 “110 words in, 33 characters out - 1 shot markers dropped - translated into Chinese”，再下面就是那两句中文本身，Show Any 节点把它们又显示了一遍](docs/node_reducer.png)
 
 *四百个词的猫、篱笆和黄昏，缩成两句短短的中文，在一个 35B 上花了 25 秒。有三个轴
 同时在做看得见的事：`detail` 在 `idea` 上，所以回来的是光秃秃的一行；`keep_camera`
@@ -2045,7 +2052,9 @@ ComfyUI/user/minimax_h3_rewriter/models.json
 而描述节点只有一个。标签页下面是这份列表的要求 —— 架构、块数和宽度、需不需要投影器，
 以及它得带着哪些编码器 —— 而在那些条目下面、灰着的，是节点包自己找到的模型，在你的
 ComfyUI 模型目录里或者一个 Ollama 仓库里：那些同样会出现在下拉框里，而且没什么可
-编辑的，因为它们是硬盘上的文件，不是文件里的行。
+编辑的，因为它们是硬盘上的文件，不是文件里的行。某个条目已经下载好的文件不会在那里
+再出现一次：那个条目会带上一个 **on disk** 标记，而下拉框只提供这个模型一次，用的是
+条目的名字。
 
 ![图上方的模型列表窗口，标题 “Model list”，底下一行 “The models this node offers. Entries are kept in models.json in the ComfyUI user directory, so they outlive an update of the pack and are shared by every workflow.”。两个标签页，Captioners 亮着，Guided writers 在它旁边，下面是这份列表的要求：只收 GGUF，一个由 llama.cpp 运行的文件，而不是一个装着 safetensors 的文件夹；架构不限，只要这个文件是一个内嵌了聊天模板的语言模型；以及要成对 —— 模型和它的 “mmproj” 投影器，出自同一次转换。再下面是两个带 FROM THE PACK 徽记的条目 —— Qwen2.5-Omni-3B，下载 3.4 GB、约需 5 GB，以及 Qwen2.5-Omni-7B，5.8 GB、约需 8 GB —— 每一个都用等宽字体显示着它的格式、仓库、文件和投影器，右边是 Edit 和 Delete 按钮。一条分割线之下，“Found in your model folders. These are offered too, and there is nothing to edit: they are files on disk, not entries in the file.” 领着三行没有按钮的条目：on disk: Qwen3VL-8B-Instruct-Q4\_K\_M.gguf [+mmproj, vision, 5.4 GB]，以及 Omni 3B 和 7B 那两对，都标着 vision 和 audio](docs/model_list_dialog.png)
 
@@ -2054,17 +2063,28 @@ ComfyUI 模型目录里或者一个 Ollama 仓库里：那些同样会出现在�
 这份列表，而不属于另一份。*
 
 **Check it** 会把在不挪动任何权重的前提下能回答的都回答掉。已经在这台机器上的文件会
-被直接读出来，所以它报得出架构和形状，也说得出那个投影器带没带视觉和音频：
+被直接读出来，所以它报得出架构和形状、模型带没带聊天模板，也说得出那个投影器带没带
+视觉和音频：
 
 ```text
 - 'Qwen2.5-Omni-7B-Q4_K_M.gguf' is a 'qwen2vl' model, 28 blocks of width 3584. That fits.
+- It carries its own chat template.
 - 'mmproj-Qwen2.5-Omni-7B-Q8_0.gguf' carries the vision and audio encoder.
 ```
+
+聊天模板比看上去要紧。27B 重写器和各个写作节点是按模型自己的模板来拼提示词的，所以
+一个不带模板的 GGUF —— 通常是某个模型的基础版转换，而不是 instruct 版 —— 看上去是个
+完全正常的模型，却会在第一次运行时就停下。在这些地方 Check it 会拒绝它，并且拿一条
+系统消息和一条用户消息把模板渲染一遍，所以本节点包渲染不了的模板也一样会被拒绝。
+描述节点以及 8B 和 Omni 重写器把模板交给 `llama-mtmd-cli`，没有模板时它会退回
+ChatML，所以在那边缺了模板只是一条警告。
 
 只存在于 Hugging Face 上的东西，则被问它的元数据能说出些什么：一个 transformers
 仓库是照着它那 4 KB 的 `config.json` 来判断的，而一个 GGUF 仓库会被问一句你写的
 那些文件在不在里面 —— 正是这一下抓住了那个拼写错误，否则它要等到一次下载跑了几分钟
-之后才浮出水面；顺手还替你把 `download_gb` 填上。
+之后才浮出水面；顺手还替你把 `download_gb` 填上。GGUF 的形状和聊天模板都在文件本身
+里，所以对一个还在 Hub 上的文件，这两样要等到第一次运行 —— 或者等文件下好之后再点一次
+Check it。
 
 有两件事这个窗口不做。它拒绝 `repo`、`file` 或者 `mmproj` 里的**网络路径**：这个
 窗口是通过 ComfyUI 的 API 够得着的，而那个 API 没有 CSRF 令牌，还常常挂在
@@ -2075,9 +2095,14 @@ ComfyUI 模型目录里或者一个 Ollama 仓库里：那些同样会出现在�
 **Open models.json**。它在那种状态下列出来的是随包附带的那一份，因为在文件重新能被
 解析之前，下拉框提供的也正是那一份。
 
-改一个条目的名字、下载大小、显存说明或者备注，会改变下拉框里读到的东西，而保存过的
-工作流记住的正是那串字。表单在提交之前会把这件事说明白，而你眼下开着的这张图会被
-替你迁过去。别的工作流不会。
+改一个条目的下载大小、显存说明或者备注，会改变下拉框里读到的东西，而保存过的工作流
+记住的正是那串字 —— 但条目是按名字找的，所以存着旧标签的工作流照样能运行它，并且在
+被打开时迁到新标签上。改名则是另一回事，因为名字正是用来找它的：表单在提交之前会把
+这件事说明白，你眼下开着的这张图会被替你迁过去，而别的工作流会丢掉这个选择。
+
+删除一个条目时，用着它的节点保持原样：运行会停下并说明这个条目已经没了，而不是换一个
+别的模型、开始一次谁也没要求过的下载。唯一的例外是文件已经在本机的条目 —— 它的
+`on disk:` 那一行会回到下拉框里，节点会迁到那一行上。
 
 这个文件里有五份列表，字段都一样。**`models`** 喂给 LoRA 重写器，必须是
 Qwen3.6-27B：
@@ -2178,11 +2203,12 @@ Qwen3.6-27B：
 
 要是你在别处存着一整个文件夹的 GGUF，一条一条加条目是绕远路：在 ComfyUI 的
 `extra_model_paths.yaml` 里用 `LLM` 这个键指向它，里面的每一个文件都会被自动提供
-出来，名字前面带着 `on disk:`。
+出来，名字前面带着 `on disk:`。如果那个文件夹排在最前面，新的下载就会进到它里面；
+而已经在任何一个 `LLM` 文件夹里的模型，会在原地被找到，不会再下载一遍。
 
 加一个条目，**刷新浏览器标签页** —— ComfyUI 不必重启 —— 它就在下拉框里了。让
-`name` 保持稳定：保存过的工作流记住的是那个标签，而一个存下来的选择已经不见了的
-节点，会指名道姓地把这件事说出来，而不是默默换一个别的。
+`name` 保持稳定：保存过的工作流正是靠它找到条目的。一个存下来的选择已经不见了的
+节点，会在任何东西运行之前停下，指名道姓地把这件事说出来，而不是默默换一个别的。
 
 #### 当这份列表本身坏掉的时候
 

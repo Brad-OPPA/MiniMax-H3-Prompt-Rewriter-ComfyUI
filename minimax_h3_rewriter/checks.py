@@ -73,6 +73,7 @@ CAPACITY = {
 }
 
 KIND_TAG = {"image": "Picture", "video": "Video", "audio": "Audio"}
+TAG_KIND = {word: kind for kind, word in KIND_TAG.items()}
 
 ALIGNMENT_PHRASE = {
     "i2va": "fully referenced",
@@ -81,6 +82,9 @@ ALIGNMENT_PHRASE = {
 }
 
 TAG = re.compile(r"<(Picture|Video|Audio)\s+(\d+)>")
+ASSET_LINE = re.compile(
+    r"^[ \t]*(Subject|Picture|Video|Audio)[ \t]+(\d+)[ \t]*:", re.IGNORECASE | re.MULTILINE
+)
 SHOT = re.compile(r"\[Shot\s+(\d+)\]\s*(?:[Aa]t\s+(\d{1,2}):(\d{2}(?:\.\d{1,3})?))?")
 DIALOGUE = re.compile(r"<d>(.*?)</d>", re.DOTALL)
 LANGUAGE = re.compile(r"^\s*\[[A-Za-z]")
@@ -175,6 +179,25 @@ def over_capacity(task, counts: dict) -> list[tuple]:
 
 def normalize(task) -> str:
     return TASK_ALIASES.get(str(task or "").strip().lower(), "")
+
+
+def block_kinds(block: str) -> list[str]:
+    """The kinds a reference block tells the writer it was given, one per label.
+
+    For ``review``'s ``having``, read off the block rather than off the sockets,
+    because the block is what the writer was shown. A picture whose badge makes
+    it a clip is ``Video N`` there, one made a subject is ``Subject N`` and no
+    asset at all, and labels carried in on 'previous' count as much as the
+    node's own. Counting sockets called a correct ``<Video 2>`` a mistake and a
+    ``<Picture 5>`` that was never written uncited -- and 'fix_once' would have
+    rewritten the answer to agree.
+    """
+    seen = {}
+    for match in ASSET_LINE.finditer(block or ""):
+        kind = TAG_KIND.get(match.group(1).capitalize())
+        if kind:
+            seen[(kind, int(match.group(2)))] = kind
+    return list(seen.values())
 
 
 def review(

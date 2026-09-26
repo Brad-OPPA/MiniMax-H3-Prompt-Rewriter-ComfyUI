@@ -83,6 +83,39 @@ def _save_entry(section: str, name: str, raw: dict) -> dict:
     }
 
 
+def _delete_entry(section: str, name: str) -> dict:
+    """Delete one entry, and say where a node that held it can go.
+
+    Nowhere, usually: the value stays, and the next run says the entry is gone
+    rather than quietly picking some other model -- which could be a download of
+    tens of gigabytes nobody asked for. The exception is an entry whose file is
+    already here. Its scanned row was hidden as a copy of the entry and is back
+    in the dropdown now, and it is the same file, so the node moves to it.
+    """
+    held = _current(section, name)
+    before = catalog.entry_label(held) if held is not None else ""
+    gone = catalog.remove(section, name)
+    after = model_sections.held_label(section, held) if gone and held is not None else ""
+    return {
+        "ok": gone,
+        "label_before": before,
+        "label_after": after,
+        "choices": {section: model_sections.choices(section)},
+    }
+
+
+def _current_labels(asked: dict) -> dict:
+    """What remembered labels read today, per list, for a graph that has just opened."""
+    moved = {}
+    for section, labels in (asked or {}).items():
+        if section not in model_sections.SECTIONS or not isinstance(labels, list):
+            continue
+        found = model_sections.current_labels(section, [str(one) for one in labels])
+        if found:
+            moved[section] = found
+    return {"ok": True, "labels": moved}
+
+
 def _check_entry(section: str, raw: dict) -> dict:
     """Probe one entry. Cleaned first, so a network path is refused before it is read."""
     entry = model_sections.clean_entry(section, raw)
@@ -169,7 +202,7 @@ def register() -> None:
                     task=record.task if record else "",
                     duration=(record.about if record else {}).get("duration"),
                     having=(
-                        [item.get("kind") for item in record.references]
+                        library.counted_as(record.references)
                         if record is not None
                         else None
                     ),
@@ -270,11 +303,7 @@ def register() -> None:
         about = (record or {}).get("about") or {}
         having = None
         if record is not None:
-            having = [
-                reference.get("kind")
-                for reference in record.get("references") or ()
-                if isinstance(reference, dict)
-            ]
+            having = library.counted_as(record.get("references"))
         return web.json_response(
             {
                 "issues": library.inspect(
@@ -442,13 +471,20 @@ def register() -> None:
     @routes.post(f"{PREFIX}/model_list/delete")
     async def model_list_delete(request):
         body = await request.json()
-        section = body.get("section") or ""
+        return await answered(
+            _delete_entry, body.get("section") or "", str(body.get("name") or "")
+        )
 
-        def drop():
-            gone = catalog.remove(section, str(body.get("name") or ""))
-            return {"ok": gone, "choices": {section: model_sections.choices(section)}}
+    @routes.post(f"{PREFIX}/model_list/current")
+    async def model_list_current(request):
+        """What labels a workflow remembers read today, so an opened graph matches its lists.
 
-        return await answered(drop)
+        ``{"labels": {section: [label, ...]}}`` in, and back only the ones that
+        changed. One request for a whole graph: the maps behind it walk the model
+        folders.
+        """
+        body = await request.json()
+        return await answered(_current_labels, body.get("labels") or {})
 
     @routes.post(f"{PREFIX}/model_list/restore")
     async def model_list_restore(request):

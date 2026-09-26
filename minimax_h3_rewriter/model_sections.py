@@ -44,6 +44,7 @@ class SectionSpec:
     shape: discovery.Shape | None = None
     gguf: tuple[str, int, int] | None = None
     base_name: str = ""
+    renders_template: bool = False
 
     @property
     def needs_mmproj(self) -> bool:
@@ -71,6 +72,7 @@ SECTIONS: dict[str, SectionSpec] = {
             discovery.GGUF_EMBEDDING_LENGTH,
         ),
         base_name=discovery.BASE_NAME,
+        renders_template=True,
     ),
     "models_8b": SectionSpec(
         key="models_8b",
@@ -122,6 +124,7 @@ SECTIONS: dict[str, SectionSpec] = {
         ),
         formats=(catalog.FORMAT_GGUF,),
         default_format=catalog.FORMAT_GGUF,
+        renders_template=True,
     ),
     "captioners": SectionSpec(
         key="captioners",
@@ -165,6 +168,7 @@ NODE_SECTIONS: dict[str, tuple[NodeSection, ...]] = {
     "MiniMaxH3PromptWriterOmni": _at(("model", "models_omni")),
     "MiniMaxH3GuidedWriter": _at(("model", "writers")),
     "MiniMaxH3GuidedWriterRef": _at(("model", "writers")),
+    "MiniMaxH3PromptReducer": _at(("model", "writers")),
     "MiniMaxH3ReferenceCaption": _at(("model", "captioners")),
     "MiniMaxH3MultiReferenceCaption": _at(("model", "captioners")),
     "MiniMaxH3UniversalWriter": _at(
@@ -266,6 +270,119 @@ def choices(section: str) -> list[str]:
         return []
 
 
+_MAP_SOURCE = {
+    "models": ("nodes", "_build_model_map"),
+    "models_8b": ("writer_8b", "_build_model_map"),
+    "models_omni": ("writer_omni", "_build_model_map"),
+    "writers": ("nodes", "_build_writer_map"),
+    "captioners": ("nodes", "_build_captioner_map"),
+}
+
+
+def _map(section: str) -> dict:
+    """Every label this list resolves, freshly built, the hidden copies included."""
+    module, name = _MAP_SOURCE[section]
+    try:
+        found = importlib.import_module(f".{module}", __package__)
+        return dict(getattr(found, name)())
+    except Exception:
+        log.warning(
+            "[minimax_h3_rewriter.model_sections] could not build the '%s' map",
+            section, exc_info=True,
+        )
+        return {}
+
+
+def on_disk(section: str, fmt: str, repo: str, file: str = "", mmproj: str = "") -> tuple[str, ...]:
+    """Where one entry's files already are, the model first, or ``()`` while it is a download.
+
+    Asked of ``paths.present_*``, which is where the nodes look before they fetch
+    anything, in the shape this list runs: a folder, one file, or a model and its
+    projector. So a scanned row hidden as a copy of the entry is exactly the file
+    the entry would have run.
+    """
+    try:
+        if fmt != catalog.FORMAT_GGUF:
+            where = paths.present_folder(repo)
+            return (where,) if where else ()
+        if spec(section).needs_mmproj:
+            return tuple(paths.present_pair(repo, file, mmproj) or ())
+        where = paths.present_file(repo, file)
+        return (where,) if where else ()
+    except Exception:
+        log.debug(
+            "[minimax_h3_rewriter.model_sections] could not look for '%s' on disk", repo,
+            exc_info=True,
+        )
+        return ()
+
+
+def copy_of(held: list[tuple[str, tuple[str, ...]]], *where: str) -> str:
+    """The entry these scanned files are the download of, or an empty string.
+
+    ``held`` pairs each entry's label with ``on_disk`` for it. A row that is the
+    same file as an entry is the same choice twice -- the one the list names
+    wins, and the scanned row stays out of the dropdown.
+    """
+    for label, found in held:
+        if found and len(found) == len(where):
+            if all(paths.same_path(one, other) for one, other in zip(found, where)):
+                return label
+    return ""
+
+
+def label_now(mapping: dict, section: str, remembered: str) -> str:
+    """What the dropdown calls a remembered label today, or "" when it names nothing.
+
+    A saved label is still good in three ways: it is in the dropdown as it is;
+    it is the scanned row of a file an entry now stands for, hidden and answered
+    by ``copy_of``; or it is an entry's label from before its size, VRAM note or
+    note was edited, found by name. The last is off while the file does not
+    parse -- the list is the packaged one then, and a name matched in it may be
+    a different file from the one the user's own entry of that name points at.
+    """
+    if not remembered:
+        return ""
+    found = mapping.get(remembered)
+    if found is not None:
+        return getattr(found, "copy_of", "") or remembered
+    if catalog.problem():
+        return ""
+    renamed = catalog.current_label(section, remembered)
+    return renamed if renamed and renamed in mapping else ""
+
+
+def current_labels(section: str, remembered: list[str]) -> dict[str, str]:
+    """Remembered labels that now read differently, mapped to what they read now.
+
+    For the browser, which puts a graph back in step when it opens one. A label
+    that is current, or names nothing any more, is left out.
+    """
+    mapping = _map(section)
+    moved = {}
+    for label in remembered:
+        now = label_now(mapping, section, str(label))
+        if now and now != label:
+            moved[str(label)] = now
+    return moved
+
+
+def scanned_label(section: str, path: str) -> str:
+    """The dropdown row for a file found on disk, or an empty string.
+
+    What a node holding a just-deleted entry can move to: the file is still
+    there, and without the entry its scanned row is in the dropdown again.
+    """
+    if not path:
+        return ""
+    for label, found in _map(section).items():
+        if not label.startswith(SCANNED_PREFIXES) or getattr(found, "copy_of", ""):
+            continue
+        if paths.same_path(getattr(found, "reference", ""), path):
+            return label
+    return ""
+
+
 _NETWORK_ADVICE = (
     "This arrived over the ComfyUI API, which anything that can reach the port may call, "
     "and looking at a network path is already an authentication attempt against the host "
@@ -347,9 +464,10 @@ def clean_entry(section: str, raw: dict) -> dict:
 def _local_copy(repo: str, name: str) -> str:
     """Where one file of an entry already sits on this machine, or an empty string.
 
-    The same three places the nodes look before they download anything: beside a
-    folder the entry names, flat in ``models/LLM``, and in the per-repository
-    folder a pair is fetched into.
+    The same places the nodes look before they download anything: beside a
+    folder the entry names, flat in an ``LLM`` folder, and in the per-repository
+    folder a pair is fetched into -- in every ``LLM`` folder, not only the one
+    downloads go to.
     """
     if not name:
         return ""
@@ -358,13 +476,13 @@ def _local_copy(repo: str, name: str) -> str:
         return found if os.path.isfile(found) else ""
     if not paths.looks_like_repo_id(repo):
         return ""
+    folder = repo.rstrip("/").split("/")[-1]
     try:
-        candidates = (
-            os.path.join(paths.models_root(), name),
-            os.path.join(paths.local_dir_for_repo(repo), name),
-        )
+        roots = paths.llm_roots()
     except Exception:
         return ""
+    candidates = [os.path.join(root, name) for root in roots]
+    candidates += [os.path.join(root, folder, name) for root in roots]
     return next((one for one in candidates if os.path.isfile(one)), "")
 
 
@@ -377,6 +495,67 @@ def _worst(lines: list) -> str:
     if "bad" in levels:
         return "bad"
     return "warn" if "warn" in levels else "good"
+
+
+_TEMPLATE_PROBE = (
+    {"role": "system", "content": "You write video prompts."},
+    {"role": "user", "content": "A cat on a windowsill."},
+)
+
+
+def _check_template(section: str, model: str, lines: list) -> None:
+    """Whether the file can be turned into a prompt, which the header alone does not say.
+
+    A GGUF without a chat template reads as a perfectly good model -- right
+    architecture, right shape -- and the node that renders the template itself
+    stops on the first run with "this GGUF has no embedded chat template". Base
+    (pretrained) conversions ship without one, and so do some community
+    conversions of instruct models. A template the sandbox cannot render stops
+    the run the same way, so it is rendered here once rather than only read.
+
+    Where ``llama-mtmd-cli`` applies the template, the binary is the judge and
+    falls back to ChatML without one, so there its absence is only a warning.
+    """
+    from . import chat_template, gguf_meta
+
+    found = spec(section)
+    name = os.path.basename(model)
+    try:
+        metadata = gguf_meta.keys(model, (chat_template.TEMPLATE_KEY, "chat_template"))
+    except Exception as error:  # noqa: BLE001 - the header was readable a moment ago
+        _say(lines, "warn", f"The chat template in '{name}' could not be read: {error}")
+        return
+
+    template = metadata.get(chat_template.TEMPLATE_KEY) or metadata.get("chat_template")
+    if not template:
+        if found.renders_template:
+            _say(
+                lines, "bad",
+                f"'{name}' carries no chat template, and this node builds its prompt from the "
+                f"model's own -- the first run would stop there. Base (pretrained) conversions "
+                f"have none; take the instruct build of the same model.",
+            )
+        else:
+            _say(
+                lines, "warn",
+                f"'{name}' carries no chat template, so llama.cpp falls back to ChatML. That is "
+                f"right for Qwen and wrong for most others.",
+            )
+        return
+
+    if not found.renders_template:
+        _say(lines, "good", "It carries its own chat template.")
+        return
+    try:
+        chat_template.render(str(template), [dict(one) for one in _TEMPLATE_PROBE])
+    except Exception as error:  # noqa: BLE001 - whatever the template raises is the answer
+        _say(
+            lines, "bad",
+            f"The chat template in '{name}' does not render here ({error}), so the first run "
+            f"would stop on it.",
+        )
+        return
+    _say(lines, "good", "Its chat template renders.")
 
 
 def _check_local_gguf(section: str, entry: dict, model: str, projector: str, lines: list) -> None:
@@ -392,6 +571,7 @@ def _check_local_gguf(section: str, entry: dict, model: str, projector: str, lin
         f"'{os.path.basename(model)}' is a '{header['arch']}' model, "
         f"{header['blocks']} blocks of width {header['width']}. That fits.",
     )
+    _check_template(section, model, lines)
     if not found.needs_mmproj:
         return
 
@@ -451,8 +631,9 @@ def _check_remote(section: str, entry: dict, lines: list) -> float | None:
         _say(
             lines, "good",
             f"'{repo}' has all {count} named files, {gigabytes:g} GB in total. The header "
-            f"itself can only be read once the file is here, so the shape is checked on the "
-            f"first run.",
+            f"itself can only be read once the file is here, so the shape and the chat "
+            f"template are checked on the first run -- or by Check it again once it is "
+            f"downloaded.",
         )
         return gigabytes
 
@@ -488,8 +669,10 @@ def check(section: str, entry: dict) -> dict:
     size: float | None = None
 
     if entry.get("format") == catalog.FORMAT_GGUF:
-        model = _local_copy(str(entry.get("repo") or ""), str(entry.get("file") or ""))
-        projector = _local_copy(str(entry.get("repo") or ""), str(entry.get("mmproj") or ""))
+        repo, file, mmproj = (str(entry.get(key) or "") for key in ("repo", "file", "mmproj"))
+        where = on_disk(section, catalog.FORMAT_GGUF, repo, file, mmproj)
+        model = where[0] if where else _local_copy(repo, file)
+        projector = where[1] if len(where) > 1 else _local_copy(repo, mmproj)
         if model:
             _check_local_gguf(section, entry, model, projector, lines)
         else:
@@ -530,9 +713,13 @@ def listing(section: str) -> dict:
     entries = []
     for raw in catalog.raw_entries(section):
         entries.append(dict(raw, label=catalog.entry_label(raw)))
+    mapping = _map(section)
+    copied = {getattr(one, "copy_of", "") for one in mapping.values()} - {""}
     seeded = seed_names_of(section)
     for entry in entries:
         entry["seeded"] = entry.get("name") in seeded
+        entry["on_disk"] = bool(_held(section, entry))
+        entry["scanned"] = entry["label"] in copied
     found = spec(section)
     return {
         "key": section,
@@ -543,9 +730,27 @@ def listing(section: str) -> dict:
         "default_format": found.default_format,
         "mmproj": found.mmproj,
         "entries": entries,
-        "found": [one for one in choices(section) if one.startswith(SCANNED_PREFIXES)],
+        "found": [
+            label for label, one in mapping.items()
+            if label.startswith(SCANNED_PREFIXES) and not getattr(one, "copy_of", "")
+        ],
         "restorable": catalog.restorable(section),
     }
+
+
+def _held(section: str, raw: dict) -> tuple[str, ...]:
+    """``on_disk`` for an entry as it is written in the file."""
+    fmt = str(raw.get("format") or spec(section).default_format).lower()
+    return on_disk(
+        section, fmt, str(raw.get("repo") or ""), str(raw.get("file") or ""),
+        str(raw.get("mmproj") or ""),
+    )
+
+
+def held_label(section: str, raw: dict) -> str:
+    """The scanned row an entry's file falls back to once the entry is gone, or ""."""
+    found = _held(section, raw)
+    return scanned_label(section, found[0]) if found else ""
 
 
 def seed_names_of(section: str) -> set[str]:

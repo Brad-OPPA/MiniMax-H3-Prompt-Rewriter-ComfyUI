@@ -167,3 +167,28 @@ def test_stamp_reports_a_record_that_has_gone(shelf):
 def test_stamp_survives_a_pick_it_cannot_read(shelf):
     for raw in ("not json", "{}", "null", '{"file": "global"}'):
         assert library.stamp(raw, True) == ""
+
+
+def test_a_reference_counts_as_its_kind_unless_the_prompt_called_it_something_else():
+    references = [
+        {"label": "ref1-image", "kind": "image"},
+        {"label": "ref2-image", "kind": "image", "as": "video"},
+        {"label": "ref3-image", "kind": "image", "as": ""},
+        "not a record",
+    ]
+    assert library.counted_as(references) == ["image", "video", ""]
+    assert library.counted_as(None) == []
+
+
+def test_the_snapshot_keeps_what_the_strip_made_of_a_picture():
+    snapshot = importlib.import_module(f"{_PKG}.snapshot")
+    taken = snapshot._take(
+        [
+            ("ref_0", "image", object(), "video"),
+            ("ref_1", "image", object(), "image"),
+            ("ref_2", "image", object()),
+        ]
+    )
+    assert taken[0]["kind"] == "image" and taken[0]["as"] == "video"
+    assert "as" not in taken[1] and "as" not in taken[2]
+    assert library.shape(taken) == {"image": 3}
