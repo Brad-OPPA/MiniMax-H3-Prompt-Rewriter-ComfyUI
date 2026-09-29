@@ -569,8 +569,14 @@ def _check_local_gguf(section: str, entry: dict, model: str, projector: str, lin
     _say(
         lines, "good",
         f"'{os.path.basename(model)}' is a '{header['arch']}' model, "
-        f"{header['blocks']} blocks of width {header['width']}. That fits.",
+        f"{header['blocks']} blocks of width {header['width']}"
+        + (" plus an MTP draft head, which is never loaded" if header.get("draft_blocks") else "")
+        + ". That fits.",
     )
+    if found.gguf is not None:
+        note = discovery.gguf_base_note(model, found.base_name)
+        if note:
+            _say(lines, "warn", note)
     _check_template(section, model, lines)
     if not found.needs_mmproj:
         return

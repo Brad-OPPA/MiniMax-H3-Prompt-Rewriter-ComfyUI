@@ -2497,6 +2497,16 @@ CUDA 那个数字的一半。
 > 不是来自 LoRA。这不是一条死路 —— 那恰恰正是[写作节点](#minimax-h3-prompt-writer-t2vai2vafl2val2va-提示词写作节点)
 > 有意在做的事，只不过它们放进提示词的是完整的指南，而不是七行字。
 
+> **更新的 Qwen 也不是替代品。** Qwen3.8-27B 同样是 `qwen35`，同样是 64 个宽 5120
+> 的块，所以形状检查会放行它，llama.cpp 也会一声不响地挂上 LoRA —— 挂在它从没
+> 训练过的权重上。这个适配器只在
+> [Qwen3.6-27B](https://huggingface.co/lightx2v/MiniMax-H3-Prompt-Rewriter-LoRA)
+> 上训练过。节点会读取 GGUF 给自己写的名字，如果其中没有一个是 Qwen3.6-27B，就在
+> 节点上和 Check it 里发出警告。它不会拒绝，因为这些名字是可选的，由量化这个文件
+> 的人填写。Qwen3.6-27B 的 **MTP 版本**没有问题：它报告 65 个块，是因为带着一个
+> 用于投机解码的草稿头，而节点不把这个头算进去 —— 在这里 llama.cpp 从不加载它，
+> 适配器也没有给它的张量。
+
 GGUF 这条路用的是**转换过的**适配器，不是 PEFT 那个 ——
 [27B LoRA](https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-GGUF) 和
 [8B 那个](https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-8B-GGUF)

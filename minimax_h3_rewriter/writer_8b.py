@@ -61,6 +61,7 @@ from .nodes import (
     _shown,
     _valid,
     _verify_base_model,
+    _warn_off_base,
 )
 from .progress import NodeProgress, announce
 from .prompt_template_8b import build_messages, expected_image_count, normalize_task
@@ -416,6 +417,7 @@ def rewrite_8b(
                 + problem
                 + "\nTurn 'use_lora' off to run it as a plain model anyway."
             )
+        _warn_off_base(model_path, discovery.BASE_NAME_8B, progress)
         adapter_path = _resolve_adapter(
             FORMAT_GGUF, settings["adapter"], settings, progress,
             catalog.ADAPTERS_8B,

@@ -18,6 +18,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 
 from .constants import install_command
@@ -128,7 +129,13 @@ HEADER_KEYS = (
     "adapter.type",
     "clip.has_vision_encoder",
     "clip.has_audio_encoder",
+    "general.name",
+    "general.basename",
+    "general.size_label",
+    "general.base_model.count",
 )
+
+BASE_MODEL_ENTRIES = 4
 
 #: quant_method -> (pip package, import name, PEFT can attach LoRA)
 #:
@@ -455,6 +462,7 @@ def scan_local(shape: Shape = SHAPE_27B) -> list[tuple[str, str]]:
 
 ARCH_KEYS = (
     "block_count",
+    "nextn_predict_layers",
     "embedding_length",
     "context_length",
     "attention.head_count",
@@ -476,6 +484,29 @@ def _header_int(value) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _header_names(value) -> tuple[str, ...]:
+    """Every name the header gives the model, the file's own first.
+
+    The base name goes with its size label because llama.cpp's converter
+    writes them apart -- ``Qwen3.6`` and ``27B`` -- where a quantiser often
+    writes ``Qwen3.6-27B`` in the base name alone.
+    """
+    found = [value("general.name")]
+    basename = value("general.basename")
+    if basename:
+        found.append(f"{basename} {value('general.size_label') or ''}")
+    parents = min(_header_int(value("general.base_model.count")) or 0, BASE_MODEL_ENTRIES)
+    for index in range(parents):
+        found.append(value(f"general.base_model.{index}.name"))
+        found.append(value(f"general.base_model.{index}.repo_url"))
+    return tuple(str(name).strip() for name in found if name and str(name).strip())
+
+
+def _name_key(name: str) -> str:
+    """``Qwen/Qwen3.6-27B``, ``Qwen3.6 27B`` and ``qwen3.6-27b`` all contain ``qwen3.627b``."""
+    return re.sub(r"[^a-z0-9.]", "", name.lower())
 
 
 def _kv_per_token(value, arch: str, blocks: int | None, width: int | None) -> int | None:
@@ -509,12 +540,24 @@ def gguf_header(path: str) -> dict:
     as if it were a base model. The shape matters for the same reason in the
     other direction — see ``GGUF_BLOCK_COUNT``.
 
+    ``blocks`` is the trunk, what llama.cpp calls ``n_layer()``. An MTP build
+    appends its speculative-decoding draft head as extra blocks and counts them
+    in ``block_count`` -- a Qwen3.6-27B with the head says 65 -- and records how
+    many in ``nextn_predict_layers``. llama.cpp loads the head only for
+    ``--spec-type draft-mtp``, which the pack never passes, and the adapter has
+    no tensors for it, so it goes into ``draft_blocks`` and the shape check
+    compares the trunk.
+
+    ``names`` is what the file says it is, for :func:`gguf_base_note`: the name,
+    the base name with its size, and every base model it lists.
+
     Cached per file identity, so a folder of large quants costs no more than a
     stat each after the first pass.
     """
     empty = {
-        "arch": "", "kind": "", "blocks": None, "width": None,
+        "arch": "", "kind": "", "blocks": None, "draft_blocks": 0, "width": None,
         "vision": False, "audio": False, "context": None, "kv_per_token": None,
+        "names": (),
     }
     try:
         stat = os.stat(path)
@@ -531,7 +574,11 @@ def gguf_header(path: str) -> dict:
 
         def also(found: dict) -> tuple[str, ...]:
             arch = found.get("general.architecture")
-            return tuple(f"{arch}.{name}" for name in ARCH_KEYS) if arch else ()
+            more = tuple(f"{arch}.{name}" for name in ARCH_KEYS) if arch else ()
+            parents = min(_header_int(found.get("general.base_model.count")) or 0, BASE_MODEL_ENTRIES)
+            for index in range(parents):
+                more += (f"general.base_model.{index}.name", f"general.base_model.{index}.repo_url")
+            return more
 
         value = gguf_meta.keys(path, HEADER_KEYS, probe=also, verify=True).get
 
@@ -541,11 +588,16 @@ def gguf_header(path: str) -> dict:
             header["kind"] = "adapter" if value("adapter.type") is not None else "model"
         header["vision"] = bool(value("clip.has_vision_encoder") or False)
         header["audio"] = bool(value("clip.has_audio_encoder") or False)
+        header["names"] = _header_names(value)
         if header["arch"]:
             blocks = value(f"{header['arch']}.block_count")
             width = value(f"{header['arch']}.embedding_length")
             header["blocks"] = int(blocks) if blocks is not None else None
             header["width"] = int(width) if width is not None else None
+            draft = _header_int(value(f"{header['arch']}.nextn_predict_layers")) or 0
+            if header["blocks"] is not None and 0 < draft < header["blocks"]:
+                header["blocks"] -= draft
+                header["draft_blocks"] = draft
             header["context"] = _header_int(value(f"{header['arch']}.context_length"))
             header["kv_per_token"] = _kv_per_token(
                 value, header["arch"], header["blocks"], header["width"]
@@ -606,6 +658,34 @@ def gguf_problem(
             f"the model will run, but as a plain one with no rewriter."
         )
     return ""
+
+
+def gguf_base_note(path: str, base: str = BASE_NAME) -> str:
+    """A warning when the header names some model other than ``base``, or "".
+
+    The shape check cannot tell one release from the next. Qwen3.8-27B is
+    ``qwen35`` with 64 blocks of 5120, the same as Qwen3.6-27B, and llama.cpp
+    attaches the LoRA to it without a word -- to weights it was never trained
+    against. The names in the header can tell them apart, but they are
+    optional and written by whoever quantised the file (a fine-tune on the
+    machine this was written on gives its base name as ``KL0.0764``). So this
+    warns and never refuses, a file that names nothing gets no warning, and one
+    that names ``base`` anywhere -- a fine-tune of it, say -- is taken at its
+    word. It is asked only once :func:`gguf_problem` has passed the file, which
+    is what lets the warning say the shape fits.
+    """
+    names = gguf_header(path).get("names") or ()
+    if not names:
+        return ""
+    wanted = _name_key(base)
+    if any(wanted in _name_key(name) for name in names):
+        return ""
+    return (
+        f"The header of '{os.path.basename(path)}' calls it '{names[0]}' and never names "
+        f"{base}, the model the adapter was trained on. The shape fits, so the LoRA "
+        f"attaches, but to weights it was not trained against, and what it writes there "
+        f"is untested. If the file is a {base} under another name, ignore this."
+    )
 
 
 def gguf_problem_8b(path: str) -> str:

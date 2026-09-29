@@ -6,6 +6,32 @@ The version in `pyproject.toml`, the git tag and the release on GitHub always sa
 the same thing; the release workflow refuses a tag that disagrees with
 `pyproject.toml`, or one that neither changelog has a section for.
 
+## 0.27.1 - 2026-09-29
+
+### Fixed
+
+- **An MTP build of the right base is no longer the wrong size.** A GGUF that
+  carries a speculative-decoding draft head counts it in `block_count`, so a
+  Qwen3.6-27B built with one read as 65 blocks and the rewriter refused it as
+  `(wrong size for the adapter)`. The header records the head separately, in
+  `nextn_predict_layers`; llama.cpp loads it only for `--spec-type draft-mtp`,
+  which the pack never passes, and the adapter has no tensors for it. The shape
+  check now compares the blocks without the head, and Check it mentions the head
+  when there is one. Issue #18.
+
+### Added
+
+- **A warning when the header names another model.** The shape check cannot
+  tell Qwen3.8-27B from Qwen3.6-27B: same architecture, 64 blocks of 5120.
+  llama.cpp attaches the LoRA to it, to weights the LoRA was never trained on,
+  and until now nothing said so. The 27B, 8B and Omni rewriters now read the
+  names a GGUF gives itself (`general.name`, `general.basename` with its size
+  label, every `general.base_model`) and say so on the node and in Check it when
+  none of them is the adapter's base. It warns and does not refuse: those fields
+  are optional and written by whoever quantised the file, so a file that names
+  nothing gets no warning, and a fine-tune that names the base is taken at its
+  word.
+
 ## 0.27.0 - 2026-09-26
 
 ### Added

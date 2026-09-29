@@ -2859,6 +2859,17 @@ the CUDA figure.
 > [writer nodes](#minimax-h3-prompt-writer-t2vai2vafl2val2va) do on purpose, with
 > the full guide in the prompt instead of seven lines.
 
+> **Neither is a later Qwen.** Qwen3.8-27B is `qwen35` with the same 64 blocks of
+> width 5120, so the shape check passes it and llama.cpp attaches the LoRA
+> without complaint — to weights it was never trained on. The adapter was
+> trained on [Qwen3.6-27B](https://huggingface.co/lightx2v/MiniMax-H3-Prompt-Rewriter-LoRA)
+> and nothing else. The node reads the names a GGUF gives itself and warns, on
+> the node and in Check it, when none of them is Qwen3.6-27B. It does not
+> refuse, because those names are optional and written by whoever quantised the
+> file. An **MTP build** of Qwen3.6-27B is fine: it reports 65 blocks because it
+> carries a draft head for speculative decoding, and the node counts the head
+> out — llama.cpp never loads it here, and the adapter has nothing for it.
+
 The GGUF route uses a **converted** adapter, not the PEFT one — F16 and Q8_0 of
 [the 27B LoRA](https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-GGUF) and of
 [the 8B one](https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-8B-GGUF). It is fetched

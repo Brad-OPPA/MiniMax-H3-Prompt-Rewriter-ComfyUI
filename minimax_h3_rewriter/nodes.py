@@ -1140,6 +1140,19 @@ BYPASS_CAPTION_TOOLTIP = (
 )
 
 
+def _warn_off_base(model_path: str, base: str, progress: NodeProgress) -> None:
+    """Say it on the node when the GGUF's header names a model other than ``base``.
+
+    A warning rather than a refusal, for the reasons in
+    ``discovery.gguf_base_note``: the shape already fits, and the names it goes
+    by are whatever the quantiser wrote.
+    """
+    note = discovery.gguf_base_note(model_path, base)
+    if note:
+        log.warning("[minimax_h3_rewriter.base] %s", note)
+        announce(progress.node_id, [("warn", note)])
+
+
 def _bypassed(unique_id, text: str, names: tuple[str, ...]) -> tuple[str, ...]:
     """Hand the prompt back untouched, with one empty string per section output."""
     NodeProgress(unique_id).finish("bypassed")
@@ -1196,6 +1209,7 @@ def rewrite_t2va(
                     + problem
                     + "\nTurn 'use_lora' off to run it as a plain model anyway."
                 )
+            _warn_off_base(model_path, discovery.BASE_NAME, progress)
             adapter_path = _resolve_adapter(
                 FORMAT_GGUF, settings["adapter"], settings, progress
             )
