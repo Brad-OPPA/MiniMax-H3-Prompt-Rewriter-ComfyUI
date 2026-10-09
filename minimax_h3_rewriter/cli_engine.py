@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import logging
 import os
-import tempfile
+import hashlib
+from pathlib import Path
+from threading import Lock
 
 from . import chat_template, checks, devices, llamacpp, runner
 from .constants import normalize_seed
@@ -39,6 +41,31 @@ ALL_LAYERS = 999
 CHARS_PER_TOKEN = 4.0
 
 _METADATA_CACHE: dict[tuple[str, int, int], dict] = {}
+_PROMPT_LOCK = Lock()
+
+
+def retain_prompt(rendered: str) -> str:
+    """Retain bounded, content-addressed inputs; never silently delete them."""
+    import folder_paths
+    root = Path(folder_paths.get_user_directory()) / 'minimax_h3_rewriter' / 'retained_prompts'
+    data = rendered.encode('utf-8')
+    if len(data) > 256 * 1024:
+        raise RuntimeError('Prompt exceeds the 256 KiB retained-input limit')
+    path = root / (hashlib.sha256(data).hexdigest() + '.txt')
+    with _PROMPT_LOCK:
+        root.mkdir(parents=True, exist_ok=True)
+        # One ComfyUI process owns this user directory; exclusive creation also
+        # detects another writer without overwriting its prompt.
+        if path.exists():
+            if path.read_bytes() != data:
+                raise RuntimeError('Existing retained prompt does not match its digest')
+            return str(path)
+        existing = list(root.iterdir())
+        if len(existing) >= 64 or sum(p.stat().st_size for p in existing) + len(data) > 4 * 1024 * 1024:
+            raise RuntimeError('Retained prompts reached 64 files / 4 MiB; user review required, no automatic cleanup')
+        with path.open('xb') as stream:
+            stream.write(data)
+    return str(path)
 
 
 def available() -> bool:
@@ -142,9 +169,7 @@ def generate(
     device = devices.validate(device)
     rendered = render_prompt(model_path, messages)
 
-    handle, prompt_file = tempfile.mkstemp(prefix="minimax_h3_", suffix=".txt")
-    with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as file:
-        file.write(rendered)
+    prompt_file = retain_prompt(rendered)
 
     command = build_command(
         binary, model_path, adapter_path, prompt_file, gpu_layers, n_ctx, seed,
@@ -178,11 +203,6 @@ def generate(
         text, stderr_text = runner.run(command, binary, report)
     except runner.ChildFailed as error:
         raise RuntimeError(str(error)) from error
-    finally:
-        try:
-            os.unlink(prompt_file)
-        except OSError:
-            log.debug("[minimax_h3_rewriter.cli.generate] could not remove %s", prompt_file)
 
     if progress is not None:
         progress.finish(f"Done · {len(text)} chars{runner.speed(stderr_text)}")
