@@ -20,8 +20,6 @@ ComfyUI 节点。输入一句简短的提示词，输出一段结构化、可直
   <a href="https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-GGUF"><img alt="GGUF adapter, 27B" src="docs/badges/gguf-27b.svg"></a>
   <a href="https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-8B-GGUF"><img alt="GGUF adapter, 8B" src="docs/badges/gguf-8b.svg"></a>
   <a href="https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-Omni-GGUF"><img alt="GGUF adapter, Omni" src="docs/badges/gguf-omni.svg"></a>
-  <a href="https://www.youtube.com/watch?v=h3rZTIRB_G8"><img alt="Video review, in English" src="https://img.shields.io/badge/YouTube-review%20(EN)-FF0000?logo=youtube&logoColor=white"></a>
-  <a href="https://www.youtube.com/watch?v=PZd9fWX15VA"><img alt="Video review, in Russian" src="https://img.shields.io/badge/YouTube-review%20(RU)-FF0000?logo=youtube&logoColor=white"></a>
 </p>
 
 ![ComfyUI 中的重写器节点：左边是一句简短的提示词，右边是结构化的分镜描述、声景和音乐字段](docs/node_preview.png)
@@ -150,7 +148,7 @@ ComfyUI 节点。输入一句简短的提示词，输出一段结构化、可直
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI
+git clone https://github.com/Brad-OPPA/MiniMax-H3-Prompt-Rewriter-ComfyUI
 ```
 
 Windows 上的 ComfyUI 便携版：
@@ -2628,13 +2626,7 @@ python tools/locales.py fill ru       把缺掉的键以英文补进去，再往
 使用 MiniMax-H3 受[官方 MiniMax-H3 仓库](https://huggingface.co/MiniMaxAI/MiniMax-H3)
 里的许可证和可接受使用条款约束。
 
-感谢 [AxiomGraph](https://www.youtube.com/@AxiomGraph) 为这些节点做的第一期视频评测
-—— [《Stop Struggling With MiniMax H3 Prompts. Do This Instead.》](https://www.youtube.com/watch?v=h3rZTIRB_G8)
-—— 以及上文链接的那些社区工作流。
-
-感谢 [ЭйАй Генератьон](https://www.youtube.com/@AyiTheDeer) 做的第二期、也更详细的
-一期，用俄语，它把这些节点放在其他 MiniMax-H3 节点包之中来看，而不是孤立地看 ——
-[《MiniMax H3 - как создать непрерывное длинное видео. Обзор наборов нод для ComfyUI + рерайтер промта》](https://www.youtube.com/watch?v=PZd9fWX15VA)。
+社区工作流贡献：AxiomGraph。
 
 ## 许可证
 
